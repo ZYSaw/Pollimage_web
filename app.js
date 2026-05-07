@@ -41,8 +41,8 @@ const defaults = {
 };
 
 const KAGGLE_CONFIG = {
-  apiUrl: 'https://unified-silly-finalist.ngrok-free.dev', // ← update when ngrok URL changes
-  apiKey: localStorage.getItem('kaggle_api_key') || 'YOUR_KAGGLE_API_KEY_HERE', // Set via localStorage or replace with your key
+  apiUrl: localStorage.getItem('kaggle_api_url') || 'https://unified-silly-finalist.ngrok-free.dev',
+  apiKey: localStorage.getItem('kaggle_api_key') || 'YOUR_KAGGLE_API_KEY_HERE',
   modelId: 'z-image-turbo-kaggle'
 };
 
@@ -117,7 +117,10 @@ function blobToBase64(blob) {
 function openModal() {
   document.getElementById('apiModal').classList.add('show');
   document.getElementById('apiKey').value = state.apiKey;
-  document.getElementById('kaggleApiKey').value = localStorage.getItem('kaggle_api_key') || '';
+  const kaggleKeyField = document.getElementById('kaggleApiKey');
+  if (kaggleKeyField) kaggleKeyField.value = localStorage.getItem('kaggle_api_key') || '';
+  const kaggleUrlField = document.getElementById('kaggleApiUrl');
+  if (kaggleUrlField) kaggleUrlField.value = localStorage.getItem('kaggle_api_url') || '';
 }
 
 function closeModal() {
@@ -338,17 +341,29 @@ function renderHistoryPanel() {
 // Save API key
 function saveApiKey() {
   const key = document.getElementById('apiKey').value.trim();
-  const kaggleKey = document.getElementById('kaggleApiKey').value.trim();
-
   state.apiKey = key;
   localStorage.setItem('pollinations_api_key', key);
-
-  if (kaggleKey) {
-    localStorage.setItem('kaggle_api_key', kaggleKey);
-  } else {
-    localStorage.removeItem('kaggle_api_key');
+  const kaggleKeyField = document.getElementById('kaggleApiKey');
+  const kaggleUrlField = document.getElementById('kaggleApiUrl');
+  if (kaggleKeyField) {
+    const kaggleKey = kaggleKeyField.value.trim();
+    if (kaggleKey) {
+      localStorage.setItem('kaggle_api_key', kaggleKey);
+      KAGGLE_CONFIG.apiKey = kaggleKey;
+    } else {
+      localStorage.removeItem('kaggle_api_key');
+    }
   }
-
+  if (kaggleUrlField) {
+    const kaggleUrl = kaggleUrlField.value.trim();
+    if (kaggleUrl) {
+      localStorage.setItem('kaggle_api_url', kaggleUrl);
+      KAGGLE_CONFIG.apiUrl = kaggleUrl;
+    } else {
+      localStorage.removeItem('kaggle_api_url');
+      KAGGLE_CONFIG.apiUrl = 'https://unified-silly-finalist.ngrok-free.dev';
+    }
+  }
   closeModal();
   alert('API keys saved!');
 }
@@ -453,7 +468,7 @@ if (selectedModel === KAGGLE_CONFIG.modelId) {
         if (!response.ok) throw new Error('Generation failed')
         const blob = await response.blob()
         const base64 = await blobToBase64(blob)
-        addToHistory(prompt, url, base64)
+        addToHistory({ prompt, url: base64 })
         renderResultPanel(base64)
     } catch (err) {
         alert('Error: ' + err.message)
@@ -467,7 +482,13 @@ if (selectedModel === KAGGLE_CONFIG.modelId) {
 
 // Add to history
 function addToHistory(item) {
-  state.history.unshift(item);
+  // Always store as { prompt, url }
+  if (typeof item === 'object' && item.url && item.prompt) {
+    state.history.unshift(item);
+  } else if (typeof item === 'string') {
+    // Legacy support: treat as prompt only
+    state.history.unshift({ prompt: item, url: '' });
+  }
   if (state.history.length > 20) state.history.pop();
   localStorage.setItem('pollinations_history', JSON.stringify(state.history));
   renderHistoryPanel();
