@@ -40,6 +40,12 @@ const defaults = {
   quality: 'medium'
 };
 
+const KAGGLE_CONFIG = {
+  apiUrl: 'https://unified-silly-finalist.ngrok-free.dev', // ← update when ngrok URL changes
+  apiKey: localStorage.getItem('kaggle_api_key') || 'YOUR_KAGGLE_API_KEY_HERE', // Set via localStorage or replace with your key
+  modelId: 'z-image-turbo-kaggle'
+};
+
 // Available models (image only) - fetched dynamically from API
 let imageModels = [];
 let imageModelDetails = [];
@@ -48,7 +54,8 @@ let imageModelDetails = [];
 const fallbackModels = [
   'z-image-turbo', 'z-image', 'zimage', 'flux', 'klein', 'klein-large', 'turbo',
   'gptimage', 'gptimage-large', 'kontext',
-  'seedream', 'seedream-pro', 'nanobanana', 'nanobanana-pro'
+  'seedream', 'seedream-pro', 'nanobanana', 'nanobanana-pro',
+  'z-image-turbo-kaggle'
 ];
 
 // Fetch models from API
@@ -62,6 +69,12 @@ async function fetchImageModels() {
       m.output_modalities && m.output_modalities.includes('image')
     );
     imageModels = imageModelDetails.map(m => m.name);
+    // Inject Kaggle model as a selectable option
+    imageModels.push(KAGGLE_CONFIG.modelId);
+    imageModelDetails.push({
+        name: KAGGLE_CONFIG.modelId,
+        description: '🖥️ Self-hosted on Kaggle GPU (fallback)'
+    });
   } catch (e) {
     console.warn('Failed to fetch models, using fallback:', e);
     imageModels = fallbackModels;
@@ -71,6 +84,25 @@ async function fetchImageModels() {
 
 // Quality options
 const qualityOptions = ['low', 'medium', 'high', 'hd'];
+
+// Model pricing tier (lower number = cheaper/free)
+const modelPricingTier = {
+  'flux': 1,
+  'zimage': 2,
+  'z-image-turbo-kaggle': 0,
+  'z-image': 2,
+  'nanobanana': 2,
+  'z-image-turbo': 3,
+  'turbo': 3,
+  'gptimage': 3,
+  'kontext': 3,
+  'seedream': 3,
+  'klein': 4,
+  'gptimage-large': 4,
+  'seedream-pro': 4,
+  'nanobanana-pro': 4,
+  'klein-large': 5
+};
 
 // Blob to Base64
 function blobToBase64(blob) {
@@ -85,6 +117,7 @@ function blobToBase64(blob) {
 function openModal() {
   document.getElementById('apiModal').classList.add('show');
   document.getElementById('apiKey').value = state.apiKey;
+  document.getElementById('kaggleApiKey').value = localStorage.getItem('kaggle_api_key') || '';
 }
 
 function closeModal() {
@@ -93,7 +126,14 @@ function closeModal() {
 
 // Render params panel
 function renderParamsPanel() {
-  const modelOpts = imageModels.map(m => {
+  // Sort models by pricing tier (cheapest first)
+  const sortedModels = [...imageModels].sort((a, b) => {
+    const tierA = modelPricingTier[a] || 99;
+    const tierB = modelPricingTier[b] || 99;
+    return tierA - tierB;
+  });
+
+  const modelOpts = sortedModels.map(m => {
     const detail = imageModelDetails.find(d => d.name === m);
     const label = detail ? `${m} - ${detail.description}` : m;
     const selected = m === defaults.model ? 'selected' : '';
@@ -278,6 +318,7 @@ function renderHistoryPanel() {
           <div class="history-item" onclick="loadFromHistory(${i})">
             <img src="${item.url}" alt="History image">
             <div class="history-prompt">${item.prompt}</div>
+            <button class="history-delete-btn" onclick="event.stopPropagation(); deleteFromHistory(${i})" title="Delete">✕</button>
           </div>
         `).join('')}
       </div>
@@ -297,10 +338,19 @@ function renderHistoryPanel() {
 // Save API key
 function saveApiKey() {
   const key = document.getElementById('apiKey').value.trim();
+  const kaggleKey = document.getElementById('kaggleApiKey').value.trim();
+
   state.apiKey = key;
   localStorage.setItem('pollinations_api_key', key);
+
+  if (kaggleKey) {
+    localStorage.setItem('kaggle_api_key', kaggleKey);
+  } else {
+    localStorage.removeItem('kaggle_api_key');
+  }
+
   closeModal();
-  alert('API key saved!');
+  alert('API keys saved!');
 }
 
 // Connect with Pollinations (BYOP)
@@ -357,31 +407,62 @@ async function generateImage() {
   if (document.getElementById('safe').checked) params.set('safe', 'true');
   if (document.getElementById('transparent').checked) params.set('transparent', 'true');
 
-  const url = `https://gen.pollinations.ai/image/${encodeURIComponent(prompt)}?${params}`;
-
-  try {
-    const fetchOptions = {};
-    if (state.apiKey) {
-      fetchOptions.headers = {
-        'Authorization': `Bearer ${state.apiKey}`
-      };
-    }
-
-    const response = await fetch(url, fetchOptions);
-    if (!response.ok) throw new Error('Generation failed');
-
-    const blob = await response.blob();
-    const base64 = await blobToBase64(blob);
-
-    addToHistory({ prompt, url: base64 });
-    renderResultPanel(base64);
-  } catch (err) {
-    alert('Error: ' + err.message);
-    renderResultPanel();
-  } finally {
-    state.isGenerating = false;
-    document.getElementById('generateBtn').disabled = false;
+  // Add API key to params if available (for OAuth tokens)
+  if (state.apiKey) {
+    params.set('key', state.apiKey);
   }
+
+const selectedModel = document.getElementById('model').value;
+
+if (selectedModel === KAGGLE_CONFIG.modelId) {
+    // ── Kaggle / Z-Image-Turbo backend ──
+    const width = document.getElementById('width').value;
+    const height = document.getElementById('height').value;
+    try {
+        const resp = await fetch(`${KAGGLE_CONFIG.apiUrl}/v1/images/generations`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${KAGGLE_CONFIG.apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: 'z-image-turbo',
+                prompt,
+                size: `${width}x${height}`,
+                response_format: 'b64_json'
+            })
+        });
+        if (!resp.ok) throw new Error('Kaggle generation failed');
+        const data = await resp.json();
+        const base64 = `data:image/png;base64,${data.data[0].b64_json}`;
+        addToHistory({ prompt, url: base64 });
+        renderResultPanel(base64);
+    } catch (err) {
+        alert('Error: ' + err.message);
+        renderResultPanel();
+    } finally {
+        state.isGenerating = false;
+        document.getElementById('generateBtn').disabled = false;
+    }
+} else {
+    // ── Original Pollinations backend ──
+    const url = `https://gen.pollinations.ai/image/${encodeURIComponent(prompt)}?${params}`
+    try {
+        const fetchOptions = {}
+        const response = await fetch(url, fetchOptions)
+        if (!response.ok) throw new Error('Generation failed')
+        const blob = await response.blob()
+        const base64 = await blobToBase64(blob)
+        addToHistory(prompt, url, base64)
+        renderResultPanel(base64)
+    } catch (err) {
+        alert('Error: ' + err.message)
+        renderResultPanel()
+    }
+  }
+
+  state.isGenerating = false;
+  document.getElementById('generateBtn').disabled = false;
 }
 
 // Add to history
@@ -399,6 +480,13 @@ function loadFromHistory(index) {
     document.getElementById('prompt').value = item.prompt;
     renderResultPanel(item.url);
   }
+}
+
+// Delete single history item
+function deleteFromHistory(index) {
+  state.history.splice(index, 1);
+  localStorage.setItem('pollinations_history', JSON.stringify(state.history));
+  renderHistoryPanel();
 }
 
 // Clear history
@@ -486,15 +574,45 @@ function buildGenerationUrl(prompt, customSeed = null) {
   if (document.getElementById('safe').checked) params.set('safe', 'true');
   if (document.getElementById('transparent').checked) params.set('transparent', 'true');
 
+  // Add API key to params if available (for OAuth tokens)
+  if (state.apiKey) {
+    params.set('key', state.apiKey);
+  }
+
+  // Kaggle model: return a marker object so generateSingleForBatch can route correctly
+  if (document.getElementById('model').value === KAGGLE_CONFIG.modelId) {
+    return {
+      __kaggle: true,
+      prompt,
+      width: document.getElementById('width').value,
+      height: document.getElementById('height').value
+    };
+  }
   return `https://gen.pollinations.ai/image/${encodeURIComponent(prompt)}?${params}`;
 }
 
 // Generate single image for batch
 async function generateSingleForBatch(prompt, index) {
-  const url = buildGenerationUrl(prompt);
-  const fetchOptions = {};
-  if (state.apiKey) {
-    fetchOptions.headers = { 'Authorization': `Bearer ${state.apiKey}` };
+  const urlOrMarker = buildGenerationUrl(prompt);
+
+  if (urlOrMarker && urlOrMarker.__kaggle) {
+    const { width, height } = urlOrMarker;
+    try {
+      const resp = await fetch(`${KAGGLE_CONFIG.apiUrl}/v1/images/generations`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${KAGGLE_CONFIG.apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ model: 'z-image-turbo', prompt, size: `${width}x${height}`, response_format: 'b64_json' })
+      });
+      if (!resp.ok) throw new Error(`Kaggle error: ${resp.status}`);
+      const data = await resp.json();
+      const base64 = `data:image/png;base64,${data.data[0].b64_json}`;
+      return { success: true, url: base64, prompt, index };
+    } catch (err) {
+      return { success: false, error: err.message, prompt, index };
+    }
   }
 
   try {
