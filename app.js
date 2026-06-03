@@ -30,14 +30,14 @@ const state = {
 
 // Default config
 const defaults = {
-  model: 'z-image-turbo',
-  width: 512,
-  height: 512,
+  model: 'zimage',
+  width: 1024,
+  height: 1024,
   seed: -1,
   enhance: false,
   nologo: true,
   safe: false,
-  quality: 'medium'
+  quality: 'high'
 };
 
 const KAGGLE_CONFIG = {
@@ -85,25 +85,6 @@ async function fetchImageModels() {
 // Quality options
 const qualityOptions = ['low', 'medium', 'high', 'hd'];
 
-// Model pricing tier (lower number = cheaper/free)
-const modelPricingTier = {
-  'flux': 1,
-  'zimage': 2,
-  'z-image-turbo-kaggle': 0,
-  'z-image': 2,
-  'nanobanana': 2,
-  'z-image-turbo': 3,
-  'turbo': 3,
-  'gptimage': 3,
-  'kontext': 3,
-  'seedream': 3,
-  'klein': 4,
-  'gptimage-large': 4,
-  'seedream-pro': 4,
-  'nanobanana-pro': 4,
-  'klein-large': 5
-};
-
 // Blob to Base64
 function blobToBase64(blob) {
   return new Promise((resolve) => {
@@ -129,14 +110,7 @@ function closeModal() {
 
 // Render params panel
 function renderParamsPanel() {
-  // Sort models by pricing tier (cheapest first)
-  const sortedModels = [...imageModels].sort((a, b) => {
-    const tierA = modelPricingTier[a] || 99;
-    const tierB = modelPricingTier[b] || 99;
-    return tierA - tierB;
-  });
-
-  const modelOpts = sortedModels.map(m => {
+  const modelOpts = imageModels.map(m => {
     const detail = imageModelDetails.find(d => d.name === m);
     const label = detail ? `${m} - ${detail.description}` : m;
     const selected = m === defaults.model ? 'selected' : '';
@@ -219,6 +193,8 @@ function renderParamsPanel() {
       </div>
     </div>
   `;
+  const modelSelect = document.getElementById('model');
+  if (modelSelect) modelSelect.value = defaults.model;
 }
 
 // Render result panel
@@ -463,13 +439,14 @@ if (selectedModel === KAGGLE_CONFIG.modelId) {
     // ── Original Pollinations backend ──
     const url = `https://gen.pollinations.ai/image/${encodeURIComponent(prompt)}?${params}`
     try {
-        const fetchOptions = {}
-        const response = await fetch(url, fetchOptions)
-        if (!response.ok) throw new Error('Generation failed')
-        const blob = await response.blob()
-        const base64 = await blobToBase64(blob)
-        addToHistory({ prompt, url: base64 })
-        renderResultPanel(base64)
+        const response = await fetch(url)
+        if (!response.ok) {
+            let errMsg = `HTTP ${response.status}`
+            try { const t = await response.text(); if (t) errMsg = t } catch(_) {}
+            throw new Error(errMsg)
+        }
+        addToHistory({ prompt, url })
+        renderResultPanel(url)
     } catch (err) {
         alert('Error: ' + err.message)
         renderResultPanel()
@@ -636,14 +613,17 @@ async function generateSingleForBatch(prompt, index) {
     }
   }
 
+  const polUrl = buildGenerationUrl(prompt)
   try {
-    const response = await fetch(url, fetchOptions);
-    if (!response.ok) throw new Error('Generation failed');
-    const blob = await response.blob();
-    const base64 = await blobToBase64(blob);
-    return { success: true, url: base64, prompt, index };
+    const response = await fetch(polUrl)
+    if (!response.ok) {
+        let errMsg = `HTTP ${response.status}`
+        try { const t = await response.text(); if (t) errMsg = t } catch(_) {}
+        throw new Error(errMsg)
+    }
+    return { success: true, url: polUrl, prompt, index }
   } catch (err) {
-    return { success: false, error: err.message, prompt, index };
+    return { success: false, error: err.message, prompt, index }
   }
 }
 
@@ -663,7 +643,7 @@ async function generateBatch() {
   renderBatchResultPanel();
 
   // Generate images concurrently (max 9 at a time)
-  const concurrency = 9;
+  const concurrency = 3;
   const results = [];
 
   for (let i = 0; i < state.batchCount; i += concurrency) {
@@ -696,6 +676,11 @@ async function generateBatch() {
 // Initialize
 async function init() {
   checkAuthCallback();
+
+  // Clear any old base64-encoded history entries that bloat localStorage
+  state.history = state.history.filter(item => item.url && !item.url.startsWith('data:'));
+  localStorage.setItem('pollinations_history', JSON.stringify(state.history));
+
   renderResultPanel();
   renderHistoryPanel();
 
