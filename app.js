@@ -80,7 +80,6 @@ const defaults = {
   height: 1024,
   seed: -1,
   enhance: false,
-  nologo: true,
   safe: false,
   quality: 'high'
 };
@@ -120,7 +119,11 @@ async function fetchImageModels() {
     // Filter for image output models only
     const found = models
       .filter((m) => m.output_modalities && m.output_modalities.includes('image'))
-      .map((m) => ({ name: m.name, description: m.description || '' }));
+      .map((m) => ({
+        name: m.name,
+        description: m.description || '',
+        inputs: Array.isArray(m.input_modalities) ? m.input_modalities : null
+      }));
     if (found.length) pollinationsModels = found;
   } catch (e) {
     console.warn('Failed to fetch models, using fallback:', e);
@@ -174,13 +177,36 @@ function refreshModelSelect() {
   updateParamVisibility();
 }
 
-// Options that only the Pollinations API understands are hidden for custom providers
+// What each Pollinations model accepts (per the API docs). Whether a model takes a reference
+// image comes from the live model list when available, otherwise from its name.
+function pollinationsCaps(name) {
+  const entry = pollinationsModels.find((m) => m.name === name);
+  const imageInput = entry && Array.isArray(entry.inputs)
+    ? entry.inputs.includes('image')
+    : /^(kontext|nanobanana|seedream5|gptimage|klein|flux-2-dev|p-image-edit)/.test(name);
+  return {
+    seed: /^(flux|z-?image|seedream|klein|seedance)/.test(name),
+    negativePrompt: /^(flux|z-?image)/.test(name),
+    quality: /^gptimage/.test(name),
+    transparent: /^gptimage/.test(name),
+    image: imageInput
+  };
+}
+
+// Show only the options the selected model can use: custom providers get none of the
+// Pollinations-specific ones, and each Pollinations model gets the ones it supports
 function updateParamVisibility() {
   const select = document.getElementById('model');
   if (!select) return;
-  const { providerId } = splitModelValue(select.value);
+  const { providerId, model } = splitModelValue(select.value);
   const custom = providerId !== POLLINATIONS_ID;
+  const caps = custom ? {} : pollinationsCaps(model);
   document.querySelectorAll('[data-pol-only]').forEach((node) => { node.hidden = custom; });
+  document.querySelectorAll('[data-cap]').forEach((node) => { node.hidden = custom || !caps[node.dataset.cap]; });
+  // A row whose fields are all hidden would leave an empty gap
+  document.querySelectorAll('#params-panel .row').forEach((row) => {
+    row.hidden = [...row.children].every((child) => child.hidden);
+  });
   const note = document.getElementById('providerNote');
   if (note) {
     const provider = state.providers.find((p) => p.id === providerId);
@@ -437,7 +463,7 @@ function renderParamsPanel() {
           <label>Prompt</label>
           <textarea id="prompt" placeholder="Describe the image you want to generate..."></textarea>
         </div>
-        <div class="form-group" data-pol-only>
+        <div class="form-group" data-cap="negativePrompt">
           <label>Negative Prompt</label>
           <input type="text" id="negativePrompt" value="worst quality, blurry" placeholder="Things to avoid...">
         </div>
@@ -459,33 +485,26 @@ function renderParamsPanel() {
             <input type="number" id="height" value="${defaults.height}" min="64" max="2048">
           </div>
         </div>
-        <div class="row" data-pol-only>
-          <div class="form-group">
+        <div class="row">
+          <div class="form-group" data-cap="seed">
             <label>Seed</label>
             <input type="number" id="seed" value="${defaults.seed}" min="-1" placeholder="-1 for random">
           </div>
-          <div class="form-group">
+          <div class="form-group" data-cap="quality">
             <label>Quality</label>
             <select id="quality">${qualityOpts}</select>
           </div>
         </div>
       </div>
       <div class="form-section">
-        <div class="row" data-pol-only>
-          <div class="form-group">
-            <label>Guidance Scale</label>
-            <input type="number" id="guidanceScale" value="" step="0.5" min="1" max="20" placeholder="1–20">
-          </div>
-          <div class="form-group">
-            <label>Reference Image</label>
-            <input type="text" id="imageUrl" placeholder="URL">
-          </div>
+        <div class="form-group" data-cap="image">
+          <label>Reference Image URL(s)</label>
+          <input type="text" id="imageUrl" placeholder="https://... (separate several with |)">
         </div>
         <div class="checkbox-group" data-pol-only>
           <label class="checkbox-label"><input type="checkbox" id="enhance">Enhance Prompt</label>
-          <label class="checkbox-label"><input type="checkbox" id="nologo" checked>No Watermark</label>
           <label class="checkbox-label"><input type="checkbox" id="safe">Safe Mode</label>
-          <label class="checkbox-label"><input type="checkbox" id="transparent">Transparent BG</label>
+          <label class="checkbox-label" data-cap="transparent"><input type="checkbox" id="transparent">Transparent BG</label>
         </div>
       </div>
       <div class="form-section">
@@ -955,10 +974,8 @@ function readParams() {
     seed: Number.isFinite(seed) && seed >= 0 ? seed : randomSeed(),
     quality: val('quality'),
     negativePrompt: val('negativePrompt').trim(),
-    guidanceScale: val('guidanceScale'),
     imageUrl: val('imageUrl').trim(),
     enhance: checked('enhance'),
-    nologo: checked('nologo'),
     safe: checked('safe'),
     transparent: checked('transparent')
   };
@@ -967,18 +984,18 @@ function readParams() {
 // Pollinations request. The key goes in the Authorization header, not in the URL.
 function buildPollinationsRequest(prompt, p) {
   const params = new URLSearchParams();
+  // Only send what the selected model supports, the same rules that decide which fields are shown
+  const caps = pollinationsCaps(p.model);
   params.set('model', p.model);
   params.set('width', p.width);
   params.set('height', p.height);
-  params.set('seed', p.seed);
-  params.set('quality', p.quality);
-  if (p.negativePrompt) params.set('negative_prompt', p.negativePrompt);
-  if (p.guidanceScale) params.set('guidance_scale', p.guidanceScale);
-  if (p.imageUrl) params.set('image', p.imageUrl);
+  if (caps.seed) params.set('seed', p.seed);
+  if (caps.quality) params.set('quality', p.quality);
+  if (caps.negativePrompt && p.negativePrompt) params.set('negative_prompt', p.negativePrompt);
+  if (caps.image && p.imageUrl) params.set('image', p.imageUrl);
   if (p.enhance) params.set('enhance', 'true');
-  if (p.nologo) params.set('nologo', 'true');
   if (p.safe) params.set('safe', 'true');
-  if (p.transparent) params.set('transparent', 'true');
+  if (caps.transparent && p.transparent) params.set('transparent', 'true');
 
   const headers = state.apiKey ? { Authorization: `Bearer ${state.apiKey}` } : {};
   return {
@@ -1002,9 +1019,34 @@ async function fetchPollinations(prompt, p) {
   }
 }
 
-async function generatePollinationsBlob(prompt, p) {
+// How long to wait after an HTTP 429 (Retry-After header, between 1 and 15 seconds)
+function retryAfterMs(res) {
+  const seconds = Number(res.headers && res.headers.get && res.headers.get('Retry-After'));
+  return Math.min(15, Math.max(1, seconds || 3)) * 1000;
+}
+
+// Plain-language message for a failed Pollinations request, with the server's own detail after it
+async function pollinationsError(res) {
+  const detail = await readError(res);
+  const hints = {
+    400: 'Pollinations rejected these settings.',
+    401: 'No valid Pollinations API key. Add yours in Settings (image generation needs one).',
+    402: 'Your Pollinations balance is too low for this request.',
+    403: 'Your key is not allowed to do this, for example use this model.',
+    429: 'Too many requests right now. Wait a moment and try again.'
+  };
+  const hint = hints[res.status] || (res.status >= 500 ? 'Pollinations had a server problem. Try again in a moment.' : '');
+  return hint ? `${hint}\n(${detail})` : detail;
+}
+
+async function generatePollinationsBlob(prompt, p, attempt = 0) {
   const response = await fetchPollinations(prompt, p);
-  if (!response.ok) throw new Error(await readError(response));
+  // Rate limited: wait and try once more
+  if (response.status === 429 && attempt < 1) {
+    await sleep(retryAfterMs(response));
+    return generatePollinationsBlob(prompt, p, attempt + 1);
+  }
+  if (!response.ok) throw new Error(await pollinationsError(response));
   const blob = await response.blob();
   if (!blob.type || !blob.type.startsWith('image/')) {
     throw new Error(`Unexpected response type: ${blob.type || 'unknown'}`);
@@ -1025,8 +1067,7 @@ async function generateOpenAIBlob(provider, prompt, p, attempt = 0) {
 
   // Rate limited: wait for Retry-After (at most 15 s) and try once more
   if (res.status === 429 && attempt < 1) {
-    const retryAfter = Number(res.headers && res.headers.get && res.headers.get('Retry-After'));
-    await sleep(Math.min(15, Math.max(1, retryAfter || 3)) * 1000);
+    await sleep(retryAfterMs(res));
     return generateOpenAIBlob(provider, prompt, p, attempt + 1);
   }
   if (!res.ok) throw new Error(await readError(res));
