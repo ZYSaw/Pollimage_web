@@ -403,7 +403,9 @@
       border-radius: var(--radius-lg);
       padding: 24px;
       width: 90%;
-      max-width: 400px;
+      max-width: 460px;
+      max-height: 90vh;
+      overflow-y: auto;
       box-shadow: var(--shadow-lg);
       border: 1px solid var(--border-color);
       transition: background var(--transition), border-color var(--transition);
@@ -546,6 +548,47 @@
       border-radius: 50%;
       animation: spin 1s linear infinite;
     }
+    /* Elements with the hidden attribute must stay hidden even when a class sets display */
+    [hidden] { display: none !important; }
+    /* Custom providers */
+    .provider-section-title {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      font-weight: 500;
+      margin: 18px 0 8px;
+    }
+    .provider-empty, .provider-note {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .provider-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      margin-bottom: 6px;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+    }
+    .provider-info { flex: 1; min-width: 0; }
+    .provider-name { font-size: 0.85rem; color: var(--text-primary); }
+    .provider-meta {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .provider-btn { padding: 6px 10px; font-size: 0.75rem; }
+    .provider-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .provider-actions .btn { flex: 1; }
+    .provider-hint { font-size: 0.72rem; color: var(--text-muted); margin-top: 4px; }
+    .provider-status { font-size: 0.78rem; min-height: 1.2em; margin: 8px 0; color: var(--text-secondary); }
+    .provider-status.ok { color: #16a34a; }
+    .provider-status.err { color: #dc2626; }
+    [data-theme="dark"] .provider-status.ok { color: #4ade80; }
+    [data-theme="dark"] .provider-status.err { color: #f87171; }
     /* Custom scrollbar styles */
     .sidebar-content::-webkit-scrollbar {
       width: 6px;
@@ -603,10 +646,56 @@
         <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 8px;">Authorize with your Pollinations account. Key valid for 30 days.</p>
       </div>
       <div class="form-group">
-        <label>Custom API Key — <a href="https://enter.pollinations.ai" target="_blank" style="color: var(--accent-primary); text-decoration: none; font-weight: normal;">Get Key (select Publishable Key)</a></label>
+        <label>Pollinations API Key — <a href="https://enter.pollinations.ai" target="_blank" style="color: var(--accent-primary); text-decoration: none; font-weight: normal;">Get Key (select Publishable Key)</a></label>
         <input type="password" id="apiKey" placeholder="Enter your Pollinations API key">
       </div>
       <button class="btn btn-secondary" onclick="saveApiKey()" style="width: 100%;">Save Key</button>
+
+      <div class="provider-section-title">Custom providers (OpenAI-compatible image APIs)</div>
+      <div id="providerList"></div>
+      <div id="providerForm" hidden>
+        <div class="form-group">
+          <label>Name</label>
+          <input type="text" id="pfName" placeholder="Logfare">
+        </div>
+        <div class="form-group">
+          <label>Base URL</label>
+          <input type="text" id="pfBaseUrl" placeholder="https://logfare.ai/v1">
+        </div>
+        <div class="form-group">
+          <label>API key</label>
+          <input type="password" id="pfKey" placeholder="Stored only in this browser" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label>Models (optional, comma separated)</label>
+          <input type="text" id="pfModels" placeholder="Filled automatically when the provider lists its models">
+        </div>
+        <div class="form-group">
+          <label>Extra headers (optional, JSON)</label>
+          <input type="text" id="pfHeaders" placeholder='{"ngrok-skip-browser-warning": "1"}'>
+        </div>
+        <div class="row">
+          <div class="form-group">
+            <label>Parallel requests</label>
+            <input type="number" id="pfParallel" value="2" min="1" max="6">
+          </div>
+          <div class="form-group">
+            <label>&nbsp;</label>
+            <label class="checkbox-label"><input type="checkbox" id="pfB64">Ask for base64 images</label>
+          </div>
+        </div>
+        <p class="provider-hint">Turn on base64 if images are generated but fail to download. Parallel requests is used by batch mode.</p>
+        <div class="provider-status" id="pfStatus"></div>
+        <div class="provider-actions">
+          <button class="btn btn-secondary" onclick="testProvider()">Test connection</button>
+          <button class="btn btn-primary" onclick="saveProvider()" style="width:auto;">Save provider</button>
+          <button class="btn btn-secondary" onclick="closeProviderForm()">Cancel</button>
+        </div>
+      </div>
+      <div class="provider-actions" id="providerAddRow">
+        <button class="btn btn-secondary" onclick="openProviderForm()">+ Add provider</button>
+        <button class="btn btn-secondary" onclick="openProviderForm('logfare')">+ Logfare</button>
+      </div>
       <a href="https://github.com/ZYSaw/Pollimage_web" target="_blank" class="btn btn-secondary" style="display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 12px; text-decoration: none;">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
           <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>

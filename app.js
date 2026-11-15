@@ -61,6 +61,7 @@ initTheme();
 // State
 const state = {
   apiKey: storage.get('pollinations_api_key'),
+  providers: [],        // custom OpenAI-compatible providers (loaded in init)
   history: [],          // entries loaded from IndexedDB (newest first)
   isGenerating: false,
   current: null,        // { prompt, blob } for the image shown in the result panel
@@ -84,32 +85,109 @@ const defaults = {
   quality: 'high'
 };
 
-// Available models (image only) - fetched dynamically from API
-let imageModels = [];
-let imageModelDetails = [];
+// Every model belongs to a provider: the built-in Pollinations API or a custom one.
+// Dropdown values look like "providerId::modelName".
+const POLLINATIONS_ID = 'pollinations';
+const PROVIDERS_KEY = 'pollimage_providers';
 
-// Fallback models in case API fails
+// Fallback models in case the Pollinations model list cannot be loaded
 const fallbackModels = [
   'z-image-turbo', 'z-image', 'zimage', 'flux', 'klein', 'klein-large', 'turbo',
   'gptimage', 'gptimage-large', 'kontext',
   'seedream', 'seedream-pro', 'nanobanana', 'nanobanana-pro'
 ];
 
-// Fetch models from API
+// Pollinations image models: [{ name, description }]. Starts with the fallback list so
+// the page is usable immediately; the real list replaces it when it arrives.
+let pollinationsModels = fallbackModels.map((name) => ({ name, description: '' }));
+
+function modelValue(providerId, name) {
+  return `${providerId}::${name}`;
+}
+
+function splitModelValue(value) {
+  const i = String(value || '').indexOf('::');
+  if (i < 0) return { providerId: POLLINATIONS_ID, model: String(value || '') };
+  return { providerId: value.slice(0, i), model: value.slice(i + 2) };
+}
+
+// Fetch Pollinations models from the API
 async function fetchImageModels() {
   try {
     const res = await fetch('https://gen.pollinations.ai/image/models');
     if (!res.ok) throw new Error('Failed to fetch models');
     const models = await res.json();
     // Filter for image output models only
-    imageModelDetails = models.filter(m =>
-      m.output_modalities && m.output_modalities.includes('image')
-    );
-    imageModels = imageModelDetails.map(m => m.name);
+    const found = models
+      .filter((m) => m.output_modalities && m.output_modalities.includes('image'))
+      .map((m) => ({ name: m.name, description: m.description || '' }));
+    if (found.length) pollinationsModels = found;
   } catch (e) {
     console.warn('Failed to fetch models, using fallback:', e);
-    imageModels = fallbackModels;
-    imageModelDetails = [];
+  }
+}
+
+function loadProviders() {
+  try {
+    const parsed = JSON.parse(storage.get(PROVIDERS_KEY, '[]'));
+    if (Array.isArray(parsed)) return parsed.filter((p) => p && p.id && p.baseUrl);
+  } catch (_) {}
+  return [];
+}
+
+function saveProviders() {
+  return storage.set(PROVIDERS_KEY, JSON.stringify(state.providers));
+}
+
+function providerModelList(provider) {
+  return [...new Set([...(provider.fetchedModels || []), ...(provider.manualModels || [])])];
+}
+
+// <optgroup> markup for every provider that has models
+function buildModelOptions(selectedValue) {
+  const groups = [{ id: POLLINATIONS_ID, label: 'Pollinations', models: pollinationsModels }]
+    .concat(state.providers.map((p) => ({
+      id: p.id,
+      label: p.name,
+      models: providerModelList(p).map((name) => ({ name, description: '' }))
+    })));
+  return groups
+    .filter((g) => g.models.length)
+    .map((g) => `<optgroup label="${esc(g.label)}">` + g.models.map((m) => {
+      const value = modelValue(g.id, m.name);
+      const label = m.description ? `${m.name} - ${m.description}` : m.name;
+      return `<option value="${esc(value)}" ${value === selectedValue ? 'selected' : ''}>${esc(label)}</option>`;
+    }).join('') + '</optgroup>')
+    .join('');
+}
+
+// Rebuild only the model dropdown, keeping the selection and everything else in the form
+function refreshModelSelect() {
+  const select = document.getElementById('model');
+  if (!select) return;
+  const previous = select.value;
+  select.innerHTML = buildModelOptions(previous);
+  if (![...select.options].some((o) => o.value === previous)) {
+    select.value = modelValue(POLLINATIONS_ID, defaults.model);
+  }
+  if (select.selectedIndex < 0 && select.options.length) select.selectedIndex = 0;
+  updateParamVisibility();
+}
+
+// Options that only the Pollinations API understands are hidden for custom providers
+function updateParamVisibility() {
+  const select = document.getElementById('model');
+  if (!select) return;
+  const { providerId } = splitModelValue(select.value);
+  const custom = providerId !== POLLINATIONS_ID;
+  document.querySelectorAll('[data-pol-only]').forEach((node) => { node.hidden = custom; });
+  const note = document.getElementById('providerNote');
+  if (note) {
+    const provider = state.providers.find((p) => p.id === providerId);
+    note.hidden = !custom;
+    note.textContent = custom
+      ? `${provider ? provider.name : 'This provider'} receives the prompt, model and size. Seed, quality, negative prompt and the other Pollinations options are not sent.`
+      : '';
   }
 }
 
@@ -136,6 +214,36 @@ function randomSeed() {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Guess the image type from the first bytes (providers do not always send a content type)
+function sniffImageType(bytes) {
+  const startsWith = (...sig) => sig.every((b, i) => bytes[i] === b);
+  if (startsWith(0x89, 0x50, 0x4e, 0x47)) return 'image/png';
+  if (startsWith(0xff, 0xd8)) return 'image/jpeg';
+  if (startsWith(0x47, 0x49, 0x46, 0x38)) return 'image/gif';
+  if (startsWith(0x52, 0x49, 0x46, 0x46) && bytes[8] === 0x57 && bytes[9] === 0x45) return 'image/webp';
+  return 'image/png';
+}
+
+function b64ToBlob(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: sniffImageType(bytes) });
+}
+
+// Turn a failed response into a readable message (understands OpenAI-style and Pollinations errors)
+async function readError(res) {
+  let text = '';
+  try { text = await res.text(); } catch (_) {}
+  try {
+    const json = JSON.parse(text);
+    const err = json && json.error;
+    const message = err && (err.message || err);
+    if (message) return `HTTP ${res.status}: ${typeof message === 'string' ? message : JSON.stringify(message)}`;
+  } catch (_) {}
+  return text ? `HTTP ${res.status}: ${text.slice(0, 300)}` : `HTTP ${res.status}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +343,7 @@ async function makeThumbnail(blob, size = 192) {
 
 function pickParams(p) {
   return {
-    model: p.model, width: p.width, height: p.height,
+    provider: p.providerId, model: p.model, width: p.width, height: p.height,
     seed: p.seed, quality: p.quality, negativePrompt: p.negativePrompt
   };
 }
@@ -291,12 +399,13 @@ function loadFromHistory(entry) {
   };
   setField('prompt', entry.prompt);
   const p = entry.params || {};
-  setField('model', p.model);
+  if (p.model) setField('model', modelValue(p.provider || POLLINATIONS_ID, p.model));
   setField('width', p.width);
   setField('height', p.height);
   setField('seed', p.seed);
   setField('quality', p.quality);
   setField('negativePrompt', p.negativePrompt);
+  updateParamVisibility();
   if (entry.image) showImage(entry.image, entry.prompt);
 }
 
@@ -304,6 +413,8 @@ function loadFromHistory(entry) {
 function openModal() {
   document.getElementById('apiModal').classList.add('show');
   document.getElementById('apiKey').value = state.apiKey;
+  renderProviderList();
+  closeProviderForm();
 }
 
 function closeModal() {
@@ -312,12 +423,8 @@ function closeModal() {
 
 // Render params panel
 function renderParamsPanel() {
-  const modelOpts = imageModels.map(m => {
-    const detail = imageModelDetails.find(d => d.name === m);
-    const label = detail ? `${m} - ${detail.description}` : m;
-    const selected = m === defaults.model ? 'selected' : '';
-    return `<option value="${esc(m)}" ${selected}>${esc(label)}</option>`;
-  }).join('');
+  const defaultModelValue = modelValue(POLLINATIONS_ID, defaults.model);
+  const modelOpts = buildModelOptions(defaultModelValue);
   const qualityOpts = qualityOptions.map(q =>
     `<option value="${q}" ${q === defaults.quality ? 'selected' : ''}>${q}</option>`
   ).join('');
@@ -330,7 +437,7 @@ function renderParamsPanel() {
           <label>Prompt</label>
           <textarea id="prompt" placeholder="Describe the image you want to generate..."></textarea>
         </div>
-        <div class="form-group">
+        <div class="form-group" data-pol-only>
           <label>Negative Prompt</label>
           <input type="text" id="negativePrompt" value="worst quality, blurry" placeholder="Things to avoid...">
         </div>
@@ -338,8 +445,9 @@ function renderParamsPanel() {
       <div class="form-section">
         <div class="form-group">
           <label>Model</label>
-          <select id="model">${modelOpts}</select>
+          <select id="model" onchange="updateParamVisibility()">${modelOpts}</select>
         </div>
+        <p class="provider-note" id="providerNote" hidden></p>
         <button class="btn btn-primary" id="generateBtn" onclick="handleGenerate()" style="margin-bottom: 10px;">✦ Generate</button>
         <div class="row">
           <div class="form-group">
@@ -351,7 +459,7 @@ function renderParamsPanel() {
             <input type="number" id="height" value="${defaults.height}" min="64" max="2048">
           </div>
         </div>
-        <div class="row">
+        <div class="row" data-pol-only>
           <div class="form-group">
             <label>Seed</label>
             <input type="number" id="seed" value="${defaults.seed}" min="-1" placeholder="-1 for random">
@@ -363,7 +471,7 @@ function renderParamsPanel() {
         </div>
       </div>
       <div class="form-section">
-        <div class="row">
+        <div class="row" data-pol-only>
           <div class="form-group">
             <label>Guidance Scale</label>
             <input type="number" id="guidanceScale" value="" step="0.5" min="1" max="20" placeholder="1–20">
@@ -373,7 +481,7 @@ function renderParamsPanel() {
             <input type="text" id="imageUrl" placeholder="URL">
           </div>
         </div>
-        <div class="checkbox-group">
+        <div class="checkbox-group" data-pol-only>
           <label class="checkbox-label"><input type="checkbox" id="enhance">Enhance Prompt</label>
           <label class="checkbox-label"><input type="checkbox" id="nologo" checked>No Watermark</label>
           <label class="checkbox-label"><input type="checkbox" id="safe">Safe Mode</label>
@@ -396,7 +504,8 @@ function renderParamsPanel() {
     </div>
   `;
   const modelSelect = document.getElementById('model');
-  if (modelSelect) modelSelect.value = defaults.model;
+  if (modelSelect) modelSelect.value = defaultModelValue;
+  updateParamVisibility();
 }
 
 // Render result panel. `imageUrl` is always an object URL created by showImage().
@@ -571,6 +680,235 @@ function saveApiKey() {
   alert(saved ? 'API key saved!' : 'Key applied for this session only (browser storage is unavailable).');
 }
 
+// ---------------------------------------------------------------------------
+// Custom providers (OpenAI-compatible image APIs such as Logfare)
+// ---------------------------------------------------------------------------
+const PROVIDER_PRESETS = {
+  logfare: { name: 'Logfare', baseUrl: 'https://logfare.ai/v1', parallel: 2 }
+};
+let editingProviderId = null;
+
+function newProviderId() {
+  return 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+function providerHeaders(provider, json = false) {
+  const headers = {};
+  if (json) headers['Content-Type'] = 'application/json';
+  if (provider.apiKey) headers.Authorization = `Bearer ${provider.apiKey}`;
+  return { ...headers, ...(provider.headers || {}) };
+}
+
+async function providerFetch(url, init) {
+  try {
+    return await fetch(url, init);
+  } catch (_) {
+    throw new Error('Could not reach the server. It may be offline, or it may not allow requests from this website (CORS).');
+  }
+}
+
+// GET {baseUrl}/models and keep the image-generation models
+async function fetchProviderModels(provider) {
+  const res = await providerFetch(`${provider.baseUrl}/models`, { headers: providerHeaders(provider) });
+  if (!res.ok) throw new Error(await readError(res));
+  const json = await res.json();
+  const list = Array.isArray(json) ? json : (json.data || json.models || []);
+  const entries = list
+    .map((m) => (typeof m === 'string' ? { id: m } : m))
+    .filter((m) => m && (m.id || m.name || m.model));
+  const idOf = (m) => String(m.id || m.name || m.model);
+
+  let images = entries;
+  if (entries.some((m) => m.endpoints !== undefined)) {
+    images = entries.filter((m) => JSON.stringify(m.endpoints || '').includes('images/generations'));
+  } else if (entries.some((m) => Array.isArray(m.output_modalities))) {
+    images = entries.filter((m) => Array.isArray(m.output_modalities) && m.output_modalities.includes('image'));
+  }
+  return [...new Set(images.map(idOf))];
+}
+
+// Refresh one provider's model list; keeps the old list if the request fails
+async function refreshProviderModels(provider) {
+  try {
+    provider.fetchedModels = await fetchProviderModels(provider);
+  } catch (e) {
+    console.warn(`Could not load models for ${provider.name}:`, e);
+  }
+}
+
+async function refreshAllProviders() {
+  if (!state.providers.length) return;
+  await Promise.all(state.providers.map(refreshProviderModels));
+  saveProviders();
+  renderProviderList();
+}
+
+function renderProviderList() {
+  const box = document.getElementById('providerList');
+  if (!box) return;
+  box.replaceChildren();
+  if (!state.providers.length) {
+    box.appendChild(el('p', 'provider-empty', 'No custom providers yet.'));
+    return;
+  }
+  state.providers.forEach((p) => {
+    const row = el('div', 'provider-row');
+    const info = el('div', 'provider-info');
+    info.appendChild(el('div', 'provider-name', p.name));
+    let host = p.baseUrl;
+    try { host = new URL(p.baseUrl).host; } catch (_) {}
+    const count = providerModelList(p).length;
+    const models = count ? `${count} image model${count === 1 ? '' : 's'}` : 'no models found';
+    info.appendChild(el('div', 'provider-meta', `${host} · ${models}${p.apiKey ? '' : ' · no key'}`));
+    row.appendChild(info);
+
+    const edit = el('button', 'btn btn-secondary provider-btn', 'Edit');
+    edit.dataset.action = 'edit';
+    edit.dataset.id = p.id;
+    const remove = el('button', 'btn btn-secondary provider-btn', 'Remove');
+    remove.dataset.action = 'remove';
+    remove.dataset.id = p.id;
+    row.append(edit, remove);
+    box.appendChild(row);
+  });
+}
+
+function onProviderListClick(e) {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  if (btn.dataset.action === 'edit') openProviderForm(null, btn.dataset.id);
+  if (btn.dataset.action === 'remove') removeProvider(btn.dataset.id);
+}
+
+function setProviderStatus(text, kind = '') {
+  const status = document.getElementById('pfStatus');
+  if (!status) return;
+  status.textContent = text;
+  status.className = `provider-status ${kind}`.trim();
+}
+
+function openProviderForm(presetKey, id) {
+  const existing = id ? state.providers.find((p) => p.id === id) : null;
+  const preset = presetKey ? PROVIDER_PRESETS[presetKey] : null;
+  const src = existing || preset || {};
+  editingProviderId = existing ? existing.id : null;
+
+  const set = (fieldId, value) => { document.getElementById(fieldId).value = value; };
+  set('pfName', src.name || '');
+  set('pfBaseUrl', src.baseUrl || '');
+  set('pfKey', existing ? (existing.apiKey || '') : '');
+  set('pfModels', existing ? (existing.manualModels || []).join(', ') : '');
+  set('pfHeaders', existing && existing.headers && Object.keys(existing.headers).length
+    ? JSON.stringify(existing.headers) : '');
+  set('pfParallel', src.parallel || 2);
+  document.getElementById('pfB64').checked = !!(existing && existing.b64);
+  setProviderStatus('');
+  document.getElementById('providerForm').hidden = false;
+  document.getElementById('providerAddRow').hidden = true;
+}
+
+function closeProviderForm() {
+  editingProviderId = null;
+  const form = document.getElementById('providerForm');
+  const addRow = document.getElementById('providerAddRow');
+  if (form) form.hidden = true;
+  if (addRow) addRow.hidden = false;
+}
+
+// Validate the form and build a provider object ({ error } when something is wrong)
+function readProviderForm() {
+  const value = (fieldId) => document.getElementById(fieldId).value;
+  const name = value('pfName').trim();
+  const baseUrl = value('pfBaseUrl').trim().replace(/\/+$/, '');
+  if (!name) return { error: 'Enter a name.' };
+
+  let url;
+  try { url = new URL(baseUrl); } catch (_) {
+    return { error: 'Enter the full base URL, for example https://logfare.ai/v1' };
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    return { error: 'The URL must start with https:// (or http:// for a local server).' };
+  }
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if (url.protocol === 'http:' && window.location.protocol === 'https:' && !local) {
+    return { error: 'This page is on https, so browsers block plain http:// endpoints. Use an https:// URL.' };
+  }
+
+  let headers = {};
+  const rawHeaders = value('pfHeaders').trim();
+  if (rawHeaders) {
+    try {
+      const parsed = JSON.parse(rawHeaders);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+      headers = Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k, String(v)]));
+    } catch (_) {
+      return { error: 'Extra headers must be JSON, for example {"ngrok-skip-browser-warning": "1"}' };
+    }
+  }
+
+  const parallel = Math.min(6, Math.max(1, parseInt(value('pfParallel'), 10) || 2));
+  const manualModels = value('pfModels').split(',').map((s) => s.trim()).filter(Boolean);
+  return {
+    provider: {
+      id: editingProviderId || newProviderId(),
+      name,
+      baseUrl,
+      apiKey: value('pfKey').trim(),
+      headers,
+      parallel,
+      b64: document.getElementById('pfB64').checked,
+      manualModels
+    }
+  };
+}
+
+async function testProvider() {
+  const { provider, error } = readProviderForm();
+  if (error) { setProviderStatus(error, 'err'); return; }
+  setProviderStatus('Testing...');
+  try {
+    const models = await fetchProviderModels(provider);
+    setProviderStatus(
+      models.length
+        ? `Connected. Found ${models.length} image model${models.length === 1 ? '' : 's'}.`
+        : 'Connected, but no image models were listed. Type the model names into "Models" yourself.',
+      models.length ? 'ok' : 'err'
+    );
+  } catch (e) {
+    setProviderStatus(e.message, 'err');
+  }
+}
+
+async function saveProvider() {
+  const { provider, error } = readProviderForm();
+  if (error) { setProviderStatus(error, 'err'); return; }
+  setProviderStatus('Saving...');
+
+  const index = state.providers.findIndex((p) => p.id === provider.id);
+  const previous = index >= 0 ? state.providers[index] : null;
+  // Keep the old model list only if the address did not change
+  provider.fetchedModels = previous && previous.baseUrl === provider.baseUrl ? (previous.fetchedModels || []) : [];
+  await refreshProviderModels(provider);
+
+  if (index >= 0) state.providers[index] = provider;
+  else state.providers.push(provider);
+  const saved = saveProviders();
+
+  closeProviderForm();
+  renderProviderList();
+  refreshModelSelect();
+  if (!saved) alert('Provider applied for this session only (browser storage is unavailable).');
+}
+
+function removeProvider(id) {
+  const provider = state.providers.find((p) => p.id === id);
+  if (!provider || !confirm(`Remove ${provider.name}?`)) return;
+  state.providers = state.providers.filter((p) => p.id !== id);
+  saveProviders();
+  renderProviderList();
+  refreshModelSelect();
+}
+
 // Connect with Pollinations (BYOP)
 function connectPollinations() {
   const redirectUrl = encodeURIComponent(window.location.href.split('#')[0]);
@@ -608,8 +946,10 @@ function readParams() {
     return !!(field && field.checked);
   };
   const seed = parseInt(val('seed'), 10);
+  const { providerId, model } = splitModelValue(val('model'));
   return {
-    model: val('model'),
+    providerId,
+    model,
     width: val('width'),
     height: val('height'),
     seed: Number.isFinite(seed) && seed >= 0 ? seed : randomSeed(),
@@ -664,11 +1004,7 @@ async function fetchPollinations(prompt, p) {
 
 async function generatePollinationsBlob(prompt, p) {
   const response = await fetchPollinations(prompt, p);
-  if (!response.ok) {
-    let errMsg = `HTTP ${response.status}`;
-    try { const t = await response.text(); if (t) errMsg = t; } catch (_) {}
-    throw new Error(errMsg);
-  }
+  if (!response.ok) throw new Error(await readError(response));
   const blob = await response.blob();
   if (!blob.type || !blob.type.startsWith('image/')) {
     throw new Error(`Unexpected response type: ${blob.type || 'unknown'}`);
@@ -676,9 +1012,56 @@ async function generatePollinationsBlob(prompt, p) {
   return blob;
 }
 
+// OpenAI-compatible image generation (Logfare and other custom providers)
+async function generateOpenAIBlob(provider, prompt, p, attempt = 0) {
+  const body = { model: p.model, prompt, size: `${p.width}x${p.height}` };
+  if (provider.b64) body.response_format = 'b64_json';
+
+  const res = await providerFetch(`${provider.baseUrl}/images/generations`, {
+    method: 'POST',
+    headers: providerHeaders(provider, true),
+    body: JSON.stringify(body)
+  });
+
+  // Rate limited: wait for Retry-After (at most 15 s) and try once more
+  if (res.status === 429 && attempt < 1) {
+    const retryAfter = Number(res.headers && res.headers.get && res.headers.get('Retry-After'));
+    await sleep(Math.min(15, Math.max(1, retryAfter || 3)) * 1000);
+    return generateOpenAIBlob(provider, prompt, p, attempt + 1);
+  }
+  if (!res.ok) throw new Error(await readError(res));
+
+  const data = await res.json();
+  const item = data && data.data && data.data[0];
+  if (item && item.b64_json) return b64ToBlob(item.b64_json);
+  if (item && item.url) {
+    // Plain request on purpose: the image link may be on another host, so no key is sent to it
+    let imageRes;
+    try {
+      imageRes = await fetch(item.url);
+    } catch (_) {
+      throw new Error('The image was generated, but the browser could not download it (the image host blocks this site). Try turning on "Ask for base64 images" for this provider.');
+    }
+    if (!imageRes.ok) throw new Error(`Could not download the generated image (HTTP ${imageRes.status}).`);
+    const bytes = new Uint8Array(await imageRes.arrayBuffer());
+    return new Blob([bytes], { type: sniffImageType(bytes) });
+  }
+  throw new Error('The provider returned no image.');
+}
+
 // One entry point for image generation; always returns an image Blob
 async function generateBlob(prompt, p) {
-  return generatePollinationsBlob(prompt, p);
+  if (p.providerId === POLLINATIONS_ID) return generatePollinationsBlob(prompt, p);
+  const provider = state.providers.find((x) => x.id === p.providerId);
+  if (!provider) throw new Error('That provider was removed. Pick another model.');
+  return generateOpenAIBlob(provider, prompt, p);
+}
+
+// How many images to request at once
+function providerConcurrency(providerId) {
+  if (providerId === POLLINATIONS_ID) return 3;
+  const provider = state.providers.find((x) => x.id === providerId);
+  return Math.min(6, Math.max(1, (provider && provider.parallel) || 2));
 }
 
 // Generate image
@@ -801,8 +1184,8 @@ async function generateBatch() {
     // Read the form once so changes mid-batch do not affect it
     const baseParams = readParams();
 
-    // Generate images concurrently, a few at a time
-    const concurrency = 3;
+    // Generate images concurrently, a few at a time (providers can have request limits)
+    const concurrency = providerConcurrency(baseParams.providerId);
     const results = [];
 
     for (let i = 0; i < state.batchCount; i += concurrency) {
@@ -858,13 +1241,18 @@ async function init() {
     if (e.target.classList.contains('modal-overlay')) closeModal();
   });
 
+  state.providers = loadProviders();
+  document.getElementById('providerList').addEventListener('click', onProviderListClick);
+  renderProviderList();
+
   renderResultPanel();
   renderHistoryPanel();
+  renderParamsPanel(); // usable immediately with the built-in model list
   const historyReady = initHistory();
 
-  // Fetch models from API, then render params panel
-  await fetchImageModels();
-  renderParamsPanel();
+  // Refresh model lists in the background; the prompt box and selection are kept
+  await Promise.all([fetchImageModels(), refreshAllProviders()]);
+  refreshModelSelect();
   await historyReady;
 }
 
