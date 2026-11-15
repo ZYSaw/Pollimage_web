@@ -40,6 +40,44 @@ function el(tag, className, text) {
   return node;
 }
 
+// Small SVG icon from the sprite in index.html
+function icon(name) {
+  return `<svg class="ico" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+}
+
+// Short floating message at the top of the screen (tap to dismiss)
+function toast(message, kind = '') {
+  const box = document.getElementById('toasts');
+  if (!box) return;
+  while (box.children.length >= 3) box.firstChild.remove();
+  const node = el('div', kind ? `toast ${kind}` : 'toast', message);
+  node.setAttribute('role', kind === 'err' ? 'alert' : 'status');
+  box.appendChild(node);
+  const timer = setTimeout(() => node.remove(), kind === 'err' ? 6000 : 2600);
+  node.addEventListener('click', () => { clearTimeout(timer); node.remove(); });
+}
+
+function promptRequired() {
+  toast('Enter a prompt first.', 'err');
+  const box = document.getElementById('prompt');
+  if (box) box.focus();
+}
+
+// Bottom sheets (options, history, settings)
+function openSheet(id) {
+  const sheet = document.getElementById(id);
+  if (sheet) sheet.classList.add('show');
+}
+
+function closeSheet(id) {
+  const sheet = document.getElementById(id);
+  if (sheet) sheet.classList.remove('show');
+}
+
+function closeAllSheets() {
+  document.querySelectorAll('.modal-overlay.show').forEach((sheet) => sheet.classList.remove('show'));
+}
+
 // Theme Management
 function initTheme() {
   const savedTheme = storage.get('theme', '');
@@ -67,8 +105,7 @@ const state = {
   current: null,        // { prompt, blob } for the image shown in the result panel
   currentUrl: null,     // object URL for that image
   // Batch generation state
-  batchMode: false,
-  batchCount: 4,
+  batchCount: 1,
   batchResults: [],
   batchProgress: { current: 0, total: 0 }
 };
@@ -158,8 +195,7 @@ function buildModelOptions(selectedValue) {
     .filter((g) => g.models.length)
     .map((g) => `<optgroup label="${esc(g.label)}">` + g.models.map((m) => {
       const value = modelValue(g.id, m.name);
-      const label = m.description ? `${m.name} - ${m.description}` : m.name;
-      return `<option value="${esc(value)}" ${value === selectedValue ? 'selected' : ''}>${esc(label)}</option>`;
+      return `<option value="${esc(value)}" title="${esc(m.description || '')}" ${value === selectedValue ? 'selected' : ''}>${esc(m.name)}</option>`;
     }).join('') + '</optgroup>')
     .join('');
 }
@@ -204,9 +240,16 @@ function updateParamVisibility() {
   document.querySelectorAll('[data-pol-only]').forEach((node) => { node.hidden = custom; });
   document.querySelectorAll('[data-cap]').forEach((node) => { node.hidden = custom || !caps[node.dataset.cap]; });
   // A row whose fields are all hidden would leave an empty gap
-  document.querySelectorAll('#params-panel .row').forEach((row) => {
+  document.querySelectorAll('#options-body .row').forEach((row) => {
     row.hidden = [...row.children].every((child) => child.hidden);
   });
+  // The model's own description (the dropdown only has room for its name)
+  const desc = document.getElementById('modelDesc');
+  if (desc) {
+    const entry = custom ? null : pollinationsModels.find((m) => m.name === model);
+    desc.textContent = entry ? entry.description : '';
+    desc.hidden = !desc.textContent;
+  }
   const note = document.getElementById('providerNote');
   if (note) {
     const provider = state.providers.find((p) => p.id === providerId);
@@ -424,6 +467,7 @@ function loadFromHistory(entry) {
     field.value = value;
   };
   setField('prompt', entry.prompt);
+  fitPrompt();
   const p = entry.params || {};
   if (p.model) setField('model', modelValue(p.provider || POLLINATIONS_ID, p.model));
   setField('width', p.width);
@@ -431,133 +475,230 @@ function loadFromHistory(entry) {
   setField('seed', p.seed);
   setField('quality', p.quality);
   setField('negativePrompt', p.negativePrompt);
+  syncAspectFromSize();
   updateParamVisibility();
   if (entry.image) showImage(entry.image, entry.prompt);
 }
 
 // Modal functions
 function openModal() {
-  document.getElementById('apiModal').classList.add('show');
+  openSheet('apiModal');
   document.getElementById('apiKey').value = state.apiKey;
   renderProviderList();
   closeProviderForm();
 }
 
 function closeModal() {
-  document.getElementById('apiModal').classList.remove('show');
+  closeSheet('apiModal');
 }
 
-// Render params panel
+// ---------------------------------------------------------------------------
+// Prompt dock, options sheet, result stage and history sheet
+// ---------------------------------------------------------------------------
+const ASPECTS = [
+  ['1:1', 1024, 1024], ['3:4', 768, 1024], ['4:3', 1024, 768], ['2:3', 640, 960],
+  ['3:2', 960, 640], ['9:16', 576, 1024], ['16:9', 1024, 576]
+];
+
+const EXAMPLE_PROMPTS = [
+  'A lighthouse in a storm, oil painting',
+  'Tiny ramen shop, isometric, soft morning light',
+  'Macro photo of a dewdrop on a fern leaf'
+];
+
+// Choosing a ratio fills in the width and height; typing a size updates the ratio
+function applyAspect() {
+  const select = document.getElementById('aspect');
+  const preset = ASPECTS.find((a) => a[0] === select.value);
+  if (!preset) return;
+  document.getElementById('width').value = preset[1];
+  document.getElementById('height').value = preset[2];
+}
+
+function syncAspectFromSize() {
+  const select = document.getElementById('aspect');
+  const width = Number(document.getElementById('width').value);
+  const height = Number(document.getElementById('height').value);
+  const preset = ASPECTS.find((a) => a[1] === width && a[2] === height);
+  select.value = preset ? preset[0] : 'custom';
+}
+
+// Grow the prompt box with its text (up to about five lines)
+function fitPrompt() {
+  const box = document.getElementById('prompt');
+  if (!box) return;
+  box.style.height = 'auto';
+  box.style.height = Math.min(box.scrollHeight, 132) + 'px';
+}
+
+function useExample(text) {
+  const box = document.getElementById('prompt');
+  box.value = text;
+  fitPrompt();
+  box.focus();
+}
+
+// Render the prompt dock and the options sheet
 function renderParamsPanel() {
   const defaultModelValue = modelValue(POLLINATIONS_ID, defaults.model);
   const modelOpts = buildModelOptions(defaultModelValue);
-  const qualityOpts = qualityOptions.map(q =>
+  const aspectOpts = ASPECTS.map(([label, w, h]) =>
+    `<option value="${label}" ${w === defaults.width && h === defaults.height ? 'selected' : ''}>${label}</option>`
+  ).join('') + '<option value="custom" hidden>Custom</option>';
+  const countOpts = [1, 2, 4, 6, 9].map((n) =>
+    `<option value="${n}">${n === 1 ? '1 image' : `${n} images`}</option>`
+  ).join('');
+  const qualityOpts = qualityOptions.map((q) =>
     `<option value="${q}" ${q === defaults.quality ? 'selected' : ''}>${q}</option>`
   ).join('');
 
   document.getElementById('params-panel').innerHTML = `
-    <div class="sidebar-header"><h2>Parameters</h2></div>
-    <div class="sidebar-content">
-      <div class="form-section">
-        <div class="form-group">
-          <label>Prompt</label>
-          <textarea id="prompt" placeholder="Describe the image you want to generate..."></textarea>
-        </div>
-        <div class="form-group" data-cap="negativePrompt">
-          <label>Negative Prompt</label>
-          <input type="text" id="negativePrompt" value="worst quality, blurry" placeholder="Things to avoid...">
-        </div>
+    <div class="prompt-row">
+      <textarea id="prompt" rows="1" placeholder="Describe an image" aria-label="Prompt" oninput="fitPrompt()"></textarea>
+      <button class="generate-btn" id="generateBtn" onclick="handleGenerate()" aria-label="Generate">${icon('arrow-up')}</button>
+    </div>
+    <div class="chips">
+      <select class="chip" id="model" aria-label="Model" onchange="updateParamVisibility()">${modelOpts}</select>
+      <select class="chip" id="aspect" aria-label="Aspect ratio" onchange="applyAspect()">${aspectOpts}</select>
+      <select class="chip" id="batchCount" aria-label="Number of images">${countOpts}</select>
+      <button class="chip chip-icon" onclick="openSheet('optionsSheet')" aria-label="More options">${icon('sliders')}</button>
+    </div>`;
+
+  document.getElementById('options-body').innerHTML = `
+    <p class="hint" id="modelDesc" hidden></p>
+    <p class="provider-note" id="providerNote" hidden></p>
+    <div class="row">
+      <div class="form-group">
+        <label for="width">Width</label>
+        <input type="number" id="width" value="${defaults.width}" min="64" max="2048" inputmode="numeric" oninput="syncAspectFromSize()">
       </div>
-      <div class="form-section">
-        <div class="form-group">
-          <label>Model</label>
-          <select id="model" onchange="updateParamVisibility()">${modelOpts}</select>
-        </div>
-        <p class="provider-note" id="providerNote" hidden></p>
-        <button class="btn btn-primary" id="generateBtn" onclick="handleGenerate()" style="margin-bottom: 10px;">✦ Generate</button>
-        <div class="row">
-          <div class="form-group">
-            <label>Width</label>
-            <input type="number" id="width" value="${defaults.width}" min="64" max="2048">
-          </div>
-          <div class="form-group">
-            <label>Height</label>
-            <input type="number" id="height" value="${defaults.height}" min="64" max="2048">
-          </div>
-        </div>
-        <div class="row">
-          <div class="form-group" data-cap="seed">
-            <label>Seed</label>
-            <input type="number" id="seed" value="${defaults.seed}" min="-1" placeholder="-1 for random">
-          </div>
-          <div class="form-group" data-cap="quality">
-            <label>Quality</label>
-            <select id="quality">${qualityOpts}</select>
-          </div>
-        </div>
-      </div>
-      <div class="form-section">
-        <div class="form-group" data-cap="image">
-          <label>Reference Image URL(s)</label>
-          <input type="text" id="imageUrl" placeholder="https://... (separate several with |)">
-        </div>
-        <div class="checkbox-group" data-pol-only>
-          <label class="checkbox-label"><input type="checkbox" id="enhance">Enhance Prompt</label>
-          <label class="checkbox-label"><input type="checkbox" id="safe">Safe Mode</label>
-          <label class="checkbox-label" data-cap="transparent"><input type="checkbox" id="transparent">Transparent BG</label>
-        </div>
-      </div>
-      <div class="form-section">
-        <div class="batch-toggle">
-          <label class="checkbox-label" style="flex:1;">
-            <input type="checkbox" id="batchMode" onchange="toggleBatchMode()">Batch Mode
-          </label>
-          <select id="batchCount" style="width:90px;" ${state.batchMode ? '' : 'disabled'}>
-            <option value="2">2 images</option>
-            <option value="4" selected>4 images</option>
-            <option value="6">6 images</option>
-            <option value="9">9 images</option>
-          </select>
-        </div>
+      <div class="form-group">
+        <label for="height">Height</label>
+        <input type="number" id="height" value="${defaults.height}" min="64" max="2048" inputmode="numeric" oninput="syncAspectFromSize()">
       </div>
     </div>
-  `;
+    <div class="form-group" data-cap="negativePrompt">
+      <label for="negativePrompt">Negative prompt</label>
+      <input type="text" id="negativePrompt" value="worst quality, blurry" placeholder="Things to leave out">
+    </div>
+    <div class="row">
+      <div class="form-group" data-cap="seed">
+        <label for="seed">Seed</label>
+        <input type="number" id="seed" value="${defaults.seed}" min="-1" placeholder="-1 for random" inputmode="numeric">
+      </div>
+      <div class="form-group" data-cap="quality">
+        <label for="quality">Quality</label>
+        <select class="field" id="quality">${qualityOpts}</select>
+      </div>
+    </div>
+    <div class="form-group" data-cap="image">
+      <label for="imageUrl">Reference image URL(s)</label>
+      <input type="text" id="imageUrl" placeholder="https://... (separate several with |)" inputmode="url" autocapitalize="off" autocorrect="off">
+    </div>
+    <div class="checkbox-group" data-pol-only>
+      <label class="checkbox-label"><input type="checkbox" id="enhance">Enhance prompt</label>
+      <label class="checkbox-label"><input type="checkbox" id="safe">Safe mode</label>
+      <label class="checkbox-label" data-cap="transparent"><input type="checkbox" id="transparent">Transparent background</label>
+    </div>
+    <button class="btn btn-secondary btn-block" style="margin-top:12px" onclick="closeSheet('optionsSheet')">Done</button>`;
+
   const modelSelect = document.getElementById('model');
   if (modelSelect) modelSelect.value = defaultModelValue;
+  document.getElementById('prompt').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      handleGenerate();
+    }
+  });
   updateParamVisibility();
 }
 
-// Render result panel. `imageUrl` is always an object URL created by showImage().
-function renderResultPanel(imageUrl = null, loading = false) {
-  let content = '';
-  if (loading) {
-    content = `
-      <div class="result-container">
-        <div style="text-align:center;">
-          <div class="spinner"></div>
-          <p style="margin-top:16px;color:var(--text-muted);">Generating image...</p>
-        </div>
-      </div>`;
-  } else if (imageUrl) {
-    const ext = extFromType(state.current && state.current.blob ? state.current.blob.type : '');
-    content = `
-      <div class="result-container">
-        <img src="${imageUrl}" alt="Generated">
-      </div>
-      <div class="result-actions">
-        <a href="${imageUrl}" download="pollimage-${Date.now()}.${ext}" class="btn btn-secondary" style="text-decoration:none;">Download Image</a>
-        <button class="btn btn-secondary" onclick="copyPrompt()">Copy Prompt</button>
-      </div>`;
-  } else {
-    content = `
-      <div class="result-container">
-        <p style="color:var(--text-muted);">Generated image will appear here</p>
-      </div>`;
-  }
-  document.getElementById('result-panel').innerHTML = content;
+// Count up the seconds while an image is being made
+function startElapsedTimer() {
+  const label = document.getElementById('elapsed');
+  if (!label) return;
+  const started = Date.now();
+  const timer = setInterval(() => {
+    if (!label.isConnected) { clearInterval(timer); return; }
+    label.textContent = `${Math.floor((Date.now() - started) / 1000)}s`;
+  }, 1000);
 }
 
-// Show a blob in the result panel (creates and manages its own object URL)
+function canShareImage() {
+  try {
+    if (typeof navigator.share !== 'function' || typeof navigator.canShare !== 'function' || !state.current) return false;
+    const blob = state.current.blob;
+    return navigator.canShare({ files: [new File([blob], `pollimage.${extFromType(blob.type)}`, { type: blob.type })] });
+  } catch (_) {
+    return false;
+  }
+}
+
+async function shareImage() {
+  if (!state.current) return;
+  const { blob, prompt } = state.current;
+  try {
+    const file = new File([blob], `pollimage.${extFromType(blob.type)}`, { type: blob.type });
+    await navigator.share({ files: [file], text: prompt });
+  } catch (e) {
+    if (e && e.name !== 'AbortError') toast('Could not share the image.', 'err');
+  }
+}
+
+// Render the result stage. `imageUrl` is always an object URL created by showImage().
+function renderResultPanel(imageUrl = null, loading = false, error = null) {
+  const panel = document.getElementById('result-panel');
+
+  if (loading) {
+    panel.innerHTML = `
+      <div class="frame">
+        <div class="pending" role="status"><p>Generating <span id="elapsed">0s</span></p></div>
+      </div>`;
+    startElapsedTimer();
+    return;
+  }
+
+  if (error) {
+    const needsKey = /API key/i.test(error);
+    panel.innerHTML = `
+      <div class="stage-note result-error" role="alert">
+        <h2 class="display">Generation failed</h2>
+        <p id="errorText"></p>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="handleGenerate()">Try again</button>
+          ${needsKey ? '<button class="btn btn-secondary" onclick="openModal()">Open settings</button>' : ''}
+        </div>
+      </div>`;
+    document.getElementById('errorText').textContent = error;
+    return;
+  }
+
+  if (imageUrl) {
+    const ext = extFromType(state.current && state.current.blob ? state.current.blob.type : '');
+    const hasBatch = state.batchResults.some((r) => r && r.success);
+    panel.innerHTML = `
+      <div class="frame"><img class="develop" src="${imageUrl}" alt="Generated image"></div>
+      <p class="caption" id="caption"></p>
+      <div class="actions">
+        <a class="btn btn-secondary" href="${imageUrl}" download="pollimage-${Date.now()}.${ext}">${icon('download')}Download</a>
+        <button class="btn btn-secondary" onclick="copyPrompt()">${icon('copy')}Copy prompt</button>
+        ${canShareImage() ? `<button class="btn btn-secondary" onclick="shareImage()">${icon('share')}Share</button>` : ''}
+        ${hasBatch ? '<button class="btn btn-secondary" onclick="renderBatchResultPanel()">All images</button>' : ''}
+      </div>`;
+    document.getElementById('caption').textContent = state.current ? state.current.prompt : '';
+    return;
+  }
+
+  panel.innerHTML = `
+    <div class="stage-note">
+      <h2 class="display">Describe an image to start.</h2>
+      <div class="examples">
+        ${EXAMPLE_PROMPTS.map((t) => `<button class="example" onclick="useExample(this.textContent)">${esc(t)}</button>`).join('')}
+      </div>
+    </div>`;
+}
+
+// Show a blob in the result stage (creates and manages its own object URL)
 function showImage(blob, prompt) {
   if (state.currentUrl) URL.revokeObjectURL(state.currentUrl);
   state.currentUrl = URL.createObjectURL(blob);
@@ -565,18 +706,15 @@ function showImage(blob, prompt) {
   renderResultPanel(state.currentUrl);
 }
 
-// Render batch result panel
+// Render the batch results (a grid of everything generated for one prompt)
 function renderBatchResultPanel() {
   const { current, total } = state.batchProgress;
   const results = state.batchResults;
+  const done = current === total;
+  const failed = results.filter((r) => r && !r.success);
 
-  let progressHtml = `
-    <div class="batch-progress">
-      <div class="progress-text">Progress: ${current}/${total}</div>
-      <div class="progress-bar">
-        <div class="progress-fill" style="width:${(current/total)*100}%"></div>
-      </div>
-    </div>`;
+  let statusText = `Generating ${current} of ${total}`;
+  if (done) statusText = failed.length ? `${total - failed.length} of ${total} images made` : `${total} images`;
 
   let gridHtml = '<div class="batch-grid">';
   for (let i = 0; i < total; i++) {
@@ -584,71 +722,83 @@ function renderBatchResultPanel() {
     if (result && result.success) {
       gridHtml += `
         <div class="batch-item" onclick="showBatchImage(${i})">
-          <img src="${result.url}" alt="Generated ${i+1}">
-          <div class="batch-item-overlay">
-            <span class="batch-item-number">${i+1}</span>
-          </div>
+          <img src="${result.url}" alt="Generated image ${i + 1}">
         </div>`;
     } else if (result && !result.success) {
-      gridHtml += `
-        <div class="batch-item batch-item-error">
-          <div class="batch-error-icon">✕</div>
-          <div class="batch-error-text">Failed</div>
-        </div>`;
+      gridHtml += '<div class="batch-item batch-item-error">Failed</div>';
     } else {
-      gridHtml += `
-        <div class="batch-item batch-item-loading">
-          <div class="spinner-small"></div>
-        </div>`;
+      gridHtml += '<div class="batch-item batch-item-loading"></div>';
     }
   }
   gridHtml += '</div>';
 
-  let actionsHtml = '';
-  if (current === total && results.some(r => r && r.success)) {
-    actionsHtml = `
-      <div class="result-actions">
-        <button class="btn btn-secondary" onclick="downloadAllBatch()">Download All</button>
-        <button class="btn btn-secondary" onclick="clearBatchResults()">Clear Results</button>
-      </div>`;
-  }
+  const actionsHtml = done && results.some((r) => r && r.success)
+    ? `<div class="actions">
+         <button class="btn btn-secondary" onclick="downloadAllBatch()">${icon('download')}Download all</button>
+         <button class="btn btn-secondary" onclick="clearBatchResults()">Clear</button>
+       </div>`
+    : '';
 
-  document.getElementById('result-panel').innerHTML = progressHtml + gridHtml + actionsHtml;
+  document.getElementById('result-panel').innerHTML = `
+    <div class="batch-status">
+      <span>${statusText}</span>
+      ${done ? '' : `<div class="bar"><div class="bar-fill" style="width:${total ? (current / total) * 100 : 0}%"></div></div>`}
+    </div>
+    ${gridHtml}
+    <p class="batch-note" id="batchNote" hidden></p>
+    ${actionsHtml}`;
+
+  if (done && failed.length) {
+    const note = document.getElementById('batchNote');
+    note.textContent = failed[0].error;
+    note.hidden = false;
+  }
 }
 
-// Render history panel (built with DOM calls so prompts are never parsed as HTML)
+// Render the history sheet (built with DOM calls so prompts are never parsed as HTML)
 let historyUrls = [];
 
 function renderHistoryPanel() {
   historyUrls.forEach((url) => URL.revokeObjectURL(url));
   historyUrls = [];
 
+  const badge = document.getElementById('historyCount');
+  if (badge) {
+    badge.textContent = state.history.length ? String(state.history.length) : '';
+    badge.hidden = !state.history.length;
+  }
+
   const panel = document.getElementById('history-panel');
   panel.replaceChildren();
 
-  const header = el('div', 'sidebar-header');
-  header.appendChild(el('h2', '', `History (${state.history.length})`));
-  panel.appendChild(header);
+  const head = el('header', 'sheet-head');
+  head.appendChild(el('h2', 'display', 'History'));
+  if (state.history.length) {
+    const clearBtn = el('button', 'btn-text', 'Clear all');
+    clearBtn.addEventListener('click', clearHistory);
+    head.appendChild(clearBtn);
+  }
+  const closeBtn = el('button', 'icon-btn');
+  closeBtn.setAttribute('aria-label', 'Close');
+  closeBtn.innerHTML = icon('close');
+  closeBtn.addEventListener('click', () => closeSheet('historySheet'));
+  head.appendChild(closeBtn);
+  panel.appendChild(head);
 
-  const content = el('div', 'sidebar-content');
-  panel.appendChild(content);
+  const body = el('div', 'sheet-body');
+  panel.appendChild(body);
 
   if (state.history.length === 0) {
-    const empty = el('div', 'history-empty');
-    empty.innerHTML = `
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
-        <path d="M21 15l-5-5L5 21"/>
-      </svg>`;
-    empty.appendChild(el('p', '', 'No history yet'));
-    content.appendChild(empty);
+    body.appendChild(el('p', 'history-empty', 'Images you make will show up here.'));
     return;
   }
 
-  const list = el('div', 'history-list');
+  const grid = el('div', 'history-grid');
   state.history.forEach((entry) => {
     const item = el('div', 'history-item');
     item.dataset.id = String(entry.id);
+    item.tabIndex = 0;
+    item.setAttribute('role', 'button');
 
     const thumbBlob = entry.thumb || entry.image;
     if (thumbBlob) {
@@ -656,38 +806,41 @@ function renderHistoryPanel() {
       const url = URL.createObjectURL(thumbBlob);
       historyUrls.push(url);
       img.src = url;
-      img.alt = 'History image';
+      img.alt = '';
       item.appendChild(img);
     } else {
-      const placeholder = el('div', 'history-thumb-empty', 'Aa');
-      placeholder.title = 'Saved prompt only (image not available)';
-      item.appendChild(placeholder);
+      item.classList.add('no-image');
+      item.appendChild(el('div', 'history-thumb-empty'));
+      item.title = 'Saved prompt only (the image is no longer available)';
     }
 
     item.appendChild(el('div', 'history-prompt', entry.prompt));
 
     const del = el('button', 'history-delete-btn', '✕');
-    del.title = 'Delete';
+    del.setAttribute('aria-label', 'Delete');
     item.appendChild(del);
-
-    list.appendChild(item);
+    grid.appendChild(item);
   });
-  list.addEventListener('click', (e) => {
-    const item = e.target.closest('.history-item');
-    if (!item) return;
-    const entry = state.history.find((h) => String(h.id) === item.dataset.id);
+
+  const open = (target) => {
+    const item = target.closest('.history-item');
+    const entry = item && state.history.find((h) => String(h.id) === item.dataset.id);
     if (!entry) return;
-    if (e.target.closest('.history-delete-btn')) deleteFromHistory(entry);
-    else loadFromHistory(entry);
+    if (target.closest('.history-delete-btn')) {
+      deleteFromHistory(entry);
+    } else {
+      loadFromHistory(entry);
+      closeSheet('historySheet');
+    }
+  };
+  grid.addEventListener('click', (e) => open(e.target));
+  grid.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('history-item')) {
+      e.preventDefault();
+      open(e.target);
+    }
   });
-  content.appendChild(list);
-
-  const footer = el('div', 'sidebar-footer');
-  const clearBtn = el('button', 'btn btn-secondary', 'Clear History');
-  clearBtn.style.width = '100%';
-  clearBtn.addEventListener('click', clearHistory);
-  footer.appendChild(clearBtn);
-  panel.appendChild(footer);
+  body.appendChild(grid);
 }
 
 // Save API key
@@ -696,7 +849,7 @@ function saveApiKey() {
   state.apiKey = key;
   const saved = storage.set('pollinations_api_key', key);
   closeModal();
-  alert(saved ? 'API key saved!' : 'Key applied for this session only (browser storage is unavailable).');
+  toast(saved ? 'API key saved!' : 'Key applied for this session only (browser storage is unavailable).', saved ? '' : 'err');
 }
 
 // ---------------------------------------------------------------------------
@@ -916,7 +1069,7 @@ async function saveProvider() {
   closeProviderForm();
   renderProviderList();
   refreshModelSelect();
-  if (!saved) alert('Provider applied for this session only (browser storage is unavailable).');
+  if (!saved) toast('Provider applied for this session only (browser storage is unavailable).', 'err');
 }
 
 function removeProvider(id) {
@@ -944,7 +1097,7 @@ function checkAuthCallback() {
       storage.set('pollinations_api_key', apiKey);
       // Clean URL
       history.replaceState(null, '', window.location.pathname + window.location.search);
-      alert('Pollinations account connected!');
+      toast('Pollinations account connected!');
     }
   }
 }
@@ -1109,10 +1262,14 @@ function providerConcurrency(providerId) {
 async function generateImage() {
   const prompt = document.getElementById('prompt').value.trim();
   if (!prompt) {
-    alert('Please enter a prompt');
+    promptRequired();
     return;
   }
 
+  // A new single image replaces any batch on screen
+  revokeBatchUrls();
+  state.batchResults = [];
+  state.batchProgress = { current: 0, total: 0 };
   state.isGenerating = true;
   document.getElementById('generateBtn').disabled = true;
   renderResultPanel(null, true);
@@ -1124,8 +1281,7 @@ async function generateImage() {
     await saveToHistory(prompt, params, blob);
     renderHistoryPanel();
   } catch (err) {
-    alert('Error: ' + err.message);
-    renderResultPanel();
+    renderResultPanel(null, false, err.message);
   } finally {
     state.isGenerating = false;
     document.getElementById('generateBtn').disabled = false;
@@ -1136,8 +1292,8 @@ async function generateImage() {
 function copyPrompt() {
   if (!state.current) return;
   navigator.clipboard.writeText(state.current.prompt)
-    .then(() => alert('Prompt copied!'))
-    .catch(() => alert('Could not copy the prompt.'));
+    .then(() => toast('Prompt copied!'))
+    .catch(() => toast('Could not copy the prompt.', 'err'));
 }
 
 // Show batch image in the result panel
@@ -1178,16 +1334,12 @@ function clearBatchResults() {
   renderResultPanel();
 }
 
-// Toggle batch mode
-function toggleBatchMode() {
-  state.batchMode = document.getElementById('batchMode').checked;
-  document.getElementById('batchCount').disabled = !state.batchMode;
-}
-
-// Handle generate button click
+// Generate button: one image, or a batch when the image count is above 1
 function handleGenerate() {
-  if (state.batchMode) {
-    state.batchCount = parseInt(document.getElementById('batchCount').value);
+  if (state.isGenerating) return;
+  const count = parseInt(document.getElementById('batchCount').value, 10) || 1;
+  if (count > 1) {
+    state.batchCount = count;
     generateBatch();
   } else {
     generateImage();
@@ -1209,7 +1361,7 @@ async function generateSingleForBatch(prompt, index, baseParams) {
 async function generateBatch() {
   const prompt = document.getElementById('prompt').value.trim();
   if (!prompt) {
-    alert('Please enter a prompt');
+    promptRequired();
     return;
   }
 
@@ -1277,9 +1429,14 @@ async function init() {
   storage.remove('kaggle_api_key');
   storage.remove('kaggle_api_url');
 
-  // Close modal on overlay click
-  document.getElementById('apiModal').addEventListener('click', (e) => {
-    if (e.target.classList.contains('modal-overlay')) closeModal();
+  // Close a sheet by tapping the dimmed area around it, or with Escape
+  document.querySelectorAll('.modal-overlay').forEach((overlay) => {
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeSheet(overlay.id);
+    });
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeAllSheets();
   });
 
   state.providers = loadProviders();
