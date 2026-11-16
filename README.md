@@ -1,81 +1,54 @@
-# Pollinations Image Generator
+# Pollimage
 
-A lightweight browser-based AI image generation workspace powered by the [Pollinations API](https://pollinations.ai).
+A small, phone-first image generator that runs entirely in the browser. It works with the [Pollinations](https://pollinations.ai) API and with any OpenAI-compatible image API, such as [Logfare](https://logfare.ai/docs#images).
+
+Plain HTML, CSS and JavaScript. No build step, no backend.
 
 ## Features
 
-- **BYOP Authorization** - Supports Pollinations OAuth for fast authorization and one-click account connection
-- **Multiple AI Models** - Supports flux, turbo, z-image, gptimage, seedream, and more
-- **Batch Generation** - Generate 2, 4, 6, or 9 images at once with concurrent processing
-- **Customizable Parameters** - Control size, seed, quality, guidance scale, and more
-- **Generation History** - Automatically saves the last 20 generation records locally
-- **Dark/Light Theme** - Theme switch with persistent preference storage
-- **Zero Dependencies** - Built with plain HTML, CSS, and vanilla JavaScript
+- **Phone-first layout** – the image fills the screen, the prompt sits in a bottom dock, and options, history and settings open as bottom sheets.
+- **Pollinations models** – the model list is loaded live from the API, and only the settings each model supports are shown and sent (seed, negative prompt, quality, reference image, transparency).
+- **Custom providers** – add any OpenAI-compatible endpoint (`POST {base}/images/generations`, `GET {base}/models`). A Logfare preset is built in.
+- **Aspect presets** – 1:1, 3:4, 4:3, 2:3, 3:2, 9:16, 16:9, or type your own size.
+- **Batch generation** – 1, 2, 4, 6 or 9 images at once, with a per-provider limit on parallel requests.
+- **History** – the last 50 images are stored in your browser (IndexedDB) and restore their prompt and settings when tapped.
+- **Clear errors** – a plain-language reason with Try again, and Open settings when the key is the problem.
+- **Dark and light themes**.
 
-## Quick Start
+## Use it
 
-0. Use online: dot com here
+1. Open the deployed site, or open `index.html` locally (any static server also works).
+2. Open **Settings** and add a key:
+   - **Pollinations** – use *Connect Pollinations Account*, or paste a key from [enter.pollinations.ai](https://enter.pollinations.ai).
+   - **Custom provider** – choose *Add Logfare* (or add your own), enter the base URL and key, then tap **Test connection**.
+3. Pick a model, write a prompt and tap Generate (Ctrl+Enter also works).
 
-1. Clone the repository:
-   ```bash
-git clone https://github.com/yourusername/pollinations.git
-cd pollinations
-```
+## Privacy
 
-2. Open `index.html` in your browser.
+- Keys and providers are stored only in your browser's `localStorage`. They are sent only to the service you configured.
+- Pollinations keys are sent in an `Authorization` header, not in the image URL.
+- Generated images and history stay in your browser. Nothing is sent to any server of this project.
+- Custom providers must allow requests from your site (CORS). If a provider blocks it, the app says so.
 
-3. Get an API key (one of the two options):
-   - **Quick Authorization**: Click the "Connect Pollinations Account" button in settings and complete OAuth authorization
-   - **Custom Key**: Get a key from [enter.pollinations.ai](https://enter.pollinations.ai) (select Publishable Key) and enter it manually
-
-4. Enter a prompt and start generating!
-
-## Project Structure
+## Files
 
 ```
-pollinations/
-├── README.md            # English documentation
-├── index.html           # UI and styles
-├── app.js               # Application logic
-└── vercel.json          # Vercel deployment settings
+├── index.html   # layout, styles and icons
+├── app.js       # providers, generation, history
+└── vercel.json  # Vercel settings
 ```
 
-## Generation Parameters
+## Deploy
 
-| Parameter | Description | Range / Options |
-|-----------|-------------|-----------------|
-| Prompt | Text description for the image | Required |
-| Negative Prompt | Content to avoid in the image | Optional |
-| Width | Image width (pixels) | 0-9007199254740991 |
-| Height | Image height (pixels) | 0-9007199254740991 |
-| Seed | Reproducibility seed (-1 for random) | -1-2147483647 |
-| Quality | Output quality level | low, medium, high, hd |
-| Guidance Scale | How closely the prompt is followed | 1-20 |
-| Model | AI model to use | flux, turbo, z-image, etc. |
+**Vercel:** import the repository and deploy. No settings are needed.
 
-### Optional Enhancements
+**Other static hosts:** upload `index.html` and `app.js` to GitHub Pages, Netlify or similar.
 
-- **Prompt Optimization** - AI-enhanced prompt improvement
-- **Remove Watermark** - Remove watermark from generated images
-- **Safety Mode** - Filter inappropriate content
-- **Transparent Background** - Generate images with an alpha channel
+## API references
 
-## Deployment
-
-### Vercel (Recommended)
-
-1. Fork this repository
-2. Import it into [Vercel](https://vercel.com)
-3. Deploy - no extra configuration needed
-
-### Static Hosting
-
-Upload the `image-generator` folder to any static hosting service (GitHub Pages, Netlify, etc.).
-
-## API Reference
-
-This project uses the Pollinations API. For full API documentation, see [Pollinations Official Docs](https://enter.pollinations.ai/api/docs)
+- Pollinations: [enter.pollinations.ai/api/docs](https://enter.pollinations.ai/api/docs)
+- Logfare images: [logfare.ai/docs#images](https://logfare.ai/docs#images)
 
 ## Acknowledgements
 
-- [Pollinations.ai](https://pollinations.ai) for providing the AI image generation API
+Thanks to [Pollinations.ai](https://pollinations.ai) for the image API.
