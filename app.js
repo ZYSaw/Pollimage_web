@@ -308,7 +308,7 @@ async function readError(res) {
   try { text = await res.text(); } catch (_) {}
   try {
     const json = JSON.parse(text);
-    const err = json && json.error;
+    const err = json && (json.error || json.errors);
     const message = err && (err.message || err);
     if (message) return `HTTP ${res.status}: ${typeof message === 'string' ? message : JSON.stringify(message)}`;
   } catch (_) {}
@@ -856,9 +856,21 @@ function saveApiKey() {
 // Custom providers (OpenAI-compatible image APIs such as Logfare)
 // ---------------------------------------------------------------------------
 const PROVIDER_PRESETS = {
-  logfare: { name: 'Logfare', baseUrl: 'https://logfare.ai/v1', parallel: 2 }
+  logfare: { name: 'Logfare', baseUrl: 'https://logfare.ai/v1', parallel: 2 },
+  // ModelScope's image API is asynchronous (submit a task, then poll it) and is only available on the .cn site
+  modelscope: {
+    name: 'ModelScope', baseUrl: 'https://api-inference.modelscope.cn/v1', parallel: 2, type: 'modelscope',
+    models: ['Qwen/Qwen-Image', 'Qwen/Qwen-Image-2512', 'Tongyi-MAI/Z-Image-Turbo', 'black-forest-labs/FLUX.1-Kontext-dev']
+  }
 };
 let editingProviderId = null;
+let editingProviderType = 'openai';
+
+// ModelScope providers use a task-based API. Detected by type, or by address for providers added by hand.
+function isModelScope(provider) {
+  if (provider.type === 'modelscope') return true;
+  try { return /(^|\.)modelscope\.(cn|ai)$/.test(new URL(provider.baseUrl).hostname); } catch (_) { return false; }
+}
 
 function newProviderId() {
   return 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -883,6 +895,8 @@ async function providerFetch(url, init) {
 async function fetchProviderModels(provider) {
   const res = await providerFetch(`${provider.baseUrl}/models`, { headers: providerHeaders(provider) });
   if (!res.ok) throw new Error(await readError(res));
+  // ModelScope's list is mostly chat models and misses its image models, so it is only used to check the token
+  if (isModelScope(provider)) return [];
   const json = await res.json();
   const list = Array.isArray(json) ? json : (json.data || json.models || []);
   const entries = list
@@ -964,12 +978,13 @@ function openProviderForm(presetKey, id) {
   const preset = presetKey ? PROVIDER_PRESETS[presetKey] : null;
   const src = existing || preset || {};
   editingProviderId = existing ? existing.id : null;
+  editingProviderType = (existing && existing.type) || (preset && preset.type) || 'openai';
 
   const set = (fieldId, value) => { document.getElementById(fieldId).value = value; };
   set('pfName', src.name || '');
   set('pfBaseUrl', src.baseUrl || '');
   set('pfKey', existing ? (existing.apiKey || '') : '');
-  set('pfModels', existing ? (existing.manualModels || []).join(', ') : '');
+  set('pfModels', existing ? (existing.manualModels || []).join(', ') : ((preset && preset.models) || []).join(', '));
   set('pfHeaders', existing && existing.headers && Object.keys(existing.headers).length
     ? JSON.stringify(existing.headers) : '');
   set('pfParallel', src.parallel || 2);
@@ -1023,6 +1038,7 @@ function readProviderForm() {
   return {
     provider: {
       id: editingProviderId || newProviderId(),
+      type: editingProviderType,
       name,
       baseUrl,
       apiKey: value('pfKey').trim(),
@@ -1040,6 +1056,10 @@ async function testProvider() {
   setProviderStatus('Testing...');
   try {
     const models = await fetchProviderModels(provider);
+    if (isModelScope(provider)) {
+      setProviderStatus('Connected. Your token works. Add the image models you want to use in "Models".', 'ok');
+      return;
+    }
     setProviderStatus(
       models.length
         ? `Connected. Found ${models.length} image model${models.length === 1 ? '' : 's'}.`
@@ -1243,11 +1263,61 @@ async function generateOpenAIBlob(provider, prompt, p, attempt = 0) {
   throw new Error('The provider returned no image.');
 }
 
+// ModelScope: submit a task, then poll it until the image is ready
+async function generateModelScopeBlob(provider, prompt, p) {
+  const submit = await providerFetch(`${provider.baseUrl}/images/generations`, {
+    method: 'POST',
+    headers: { ...providerHeaders(provider, true), 'X-ModelScope-Async-Mode': 'true' },
+    body: JSON.stringify({ model: p.model, prompt, size: `${p.width}x${p.height}` })
+  });
+  if (!submit.ok) {
+    let message = await readError(submit);
+    if (/international site/i.test(message) || /modelscope\.ai/i.test(provider.baseUrl)) {
+      message += '\nImage generation only works on the China site. Edit this provider: set the base URL to https://api-inference.modelscope.cn/v1 and use a token from modelscope.cn.';
+    }
+    throw new Error(message);
+  }
+  const task = await submit.json();
+  const taskId = task && (task.task_id || (task.data && task.data.task_id));
+  if (!taskId) throw new Error('ModelScope did not return a task id.');
+
+  const headers = providerHeaders(provider);
+  headers['X-ModelScope-Task-Type'] = 'image_generation';
+  const deadline = Date.now() + 180000;
+  while (Date.now() < deadline) {
+    await sleep(MODELSCOPE_POLL_MS);
+    const res = await providerFetch(`${provider.baseUrl}/tasks/${encodeURIComponent(taskId)}`, { headers });
+    if (!res.ok) throw new Error(await readError(res));
+    const data = await res.json();
+    const status = String(data.task_status || '').toUpperCase();
+    if (status === 'SUCCEED' || status === 'SUCCEEDED') {
+      const url = data.output_images && data.output_images[0];
+      if (!url) throw new Error('ModelScope finished but returned no image.');
+      let imageRes;
+      try {
+        imageRes = await fetch(url);
+      } catch (_) {
+        throw new Error('The image was generated, but the browser could not download it (the image host blocks this site).');
+      }
+      if (!imageRes.ok) throw new Error(`Could not download the generated image (HTTP ${imageRes.status}).`);
+      const bytes = new Uint8Array(await imageRes.arrayBuffer());
+      return new Blob([bytes], { type: sniffImageType(bytes) });
+    }
+    if (status === 'FAILED' || status === 'CANCELED' || status === 'CANCELLED') {
+      const reason = data.errors && (data.errors.message || data.errors);
+      throw new Error(`ModelScope could not make the image${reason ? `: ${typeof reason === 'string' ? reason : JSON.stringify(reason)}` : '.'}`);
+    }
+  }
+  throw new Error('ModelScope took too long (over 3 minutes). Try again.');
+}
+let MODELSCOPE_POLL_MS = 2000;
+
 // One entry point for image generation; always returns an image Blob
 async function generateBlob(prompt, p) {
   if (p.providerId === POLLINATIONS_ID) return generatePollinationsBlob(prompt, p);
   const provider = state.providers.find((x) => x.id === p.providerId);
   if (!provider) throw new Error('That provider was removed. Pick another model.');
+  if (isModelScope(provider)) return generateModelScopeBlob(provider, prompt, p);
   return generateOpenAIBlob(provider, prompt, p);
 }
 

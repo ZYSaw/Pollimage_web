@@ -8,7 +8,7 @@ Plain HTML, CSS and JavaScript. No build step, no backend.
 
 - **Phone-first layout** – the image fills the screen, the prompt sits in a bottom dock, and options, history and settings open as bottom sheets.
 - **Pollinations models** – the model list is loaded live from the API, and only the settings each model supports are shown and sent (seed, negative prompt, quality, reference image, transparency).
-- **Custom providers** – add any OpenAI-compatible endpoint (`POST {base}/images/generations`, `GET {base}/models`). A Logfare preset is built in.
+- **Custom providers** – add any OpenAI-compatible endpoint (`POST {base}/images/generations`, `GET {base}/models`). Presets for Logfare and ModelScope are built in.
 - **Aspect presets** – 1:1, 3:4, 4:3, 2:3, 3:2, 9:16, 16:9, or type your own size.
 - **Batch generation** – 1, 2, 4, 6 or 9 images at once, with a per-provider limit on parallel requests.
 - **History** – the last 50 images are stored in your browser (IndexedDB) and restore their prompt and settings when tapped.
@@ -20,7 +20,8 @@ Plain HTML, CSS and JavaScript. No build step, no backend.
 1. Open the deployed site, or open `index.html` locally (any static server also works).
 2. Open **Settings** and add a key:
    - **Pollinations** – use *Connect Pollinations Account*, or paste a key from [enter.pollinations.ai](https://enter.pollinations.ai).
-   - **Custom provider** – choose *Add Logfare* (or add your own), enter the base URL and key, then tap **Test connection**.
+   - **Custom provider** – choose *Add Logfare*, *Add ModelScope* (or add your own), enter the key, then tap **Test connection**.
+   - **ModelScope** only supports image generation on the China site: use `https://api-inference.modelscope.cn/v1` and a token from modelscope.cn. Add the image models you want in *Models* (for example `Qwen/Qwen-Image`), because its model list is mostly chat models.
 3. Pick a model, write a prompt and tap Generate (Ctrl+Enter also works).
 
 ## Privacy
