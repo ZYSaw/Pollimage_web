@@ -29,14 +29,16 @@ Plain HTML, CSS and JavaScript. No build step, no backend.
 - Keys and providers are stored only in your browser's `localStorage`. They are sent only to the service you configured.
 - Pollinations keys are sent in an `Authorization` header, not in the image URL.
 - Generated images and history stay in your browser. Nothing is sent to any server of this project.
-- Custom providers must allow requests from your site (CORS). If a provider blocks it, the app says so.
+- ModelScope blocks its async headers from browser pages, so those requests go through `api/modelscope.js` on your own Vercel deployment. It only forwards to ModelScope hosts, adds nothing, and stores nothing. Your token passes through it in the `Authorization` header. This needs the Vercel deployment; it will not work from a local `index.html`.
+- Other custom providers must allow requests from your site (CORS). If a provider blocks it, the app says so.
 
 ## Files
 
 ```
-├── index.html   # layout, styles and icons
-├── app.js       # providers, generation, history
-└── vercel.json  # Vercel settings
+├── index.html          # layout, styles and icons
+├── app.js              # providers, generation, history
+├── api/modelscope.js   # Vercel function that forwards ModelScope requests
+└── vercel.json         # Vercel settings
 ```
 
 ## Deploy

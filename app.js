@@ -1263,9 +1263,28 @@ async function generateOpenAIBlob(provider, prompt, p, attempt = 0) {
   throw new Error('The provider returned no image.');
 }
 
+// ModelScope blocks its async headers from browser pages (CORS). Try directly first, then through
+// this site's own /api/modelscope function, which makes the request from the server.
+async function modelScopeFetch(url, init) {
+  try {
+    return await fetch(url, init);
+  } catch (_) {
+    let res;
+    try {
+      res = await fetch(`/api/modelscope?u=${encodeURIComponent(url)}`, init);
+    } catch (__) {
+      throw new Error('Could not reach ModelScope. Check your connection.');
+    }
+    if (res.status === 404 && !res.headers.get('X-Pollimage-Proxy')) {
+      throw new Error('The browser blocked this request and the /api/modelscope helper is missing. Use the Vercel deployment of this app.');
+    }
+    return res;
+  }
+}
+
 // ModelScope: submit a task, then poll it until the image is ready
 async function generateModelScopeBlob(provider, prompt, p) {
-  const submit = await providerFetch(`${provider.baseUrl}/images/generations`, {
+  const submit = await modelScopeFetch(`${provider.baseUrl}/images/generations`, {
     method: 'POST',
     headers: { ...providerHeaders(provider, true), 'X-ModelScope-Async-Mode': 'true' },
     body: JSON.stringify({ model: p.model, prompt, size: `${p.width}x${p.height}` })
@@ -1282,7 +1301,7 @@ async function generateModelScopeBlob(provider, prompt, p) {
   const deadline = Date.now() + 180000;
   while (Date.now() < deadline) {
     await sleep(MODELSCOPE_POLL_MS);
-    const res = await providerFetch(`${provider.baseUrl}/tasks/${encodeURIComponent(taskId)}`, { headers });
+    const res = await modelScopeFetch(`${provider.baseUrl}/tasks/${encodeURIComponent(taskId)}`, { headers });
     if (!res.ok) throw new Error(await readError(res));
     const data = await res.json();
     const status = String(data.task_status || '').toUpperCase();
@@ -1291,9 +1310,9 @@ async function generateModelScopeBlob(provider, prompt, p) {
       if (!url) throw new Error('ModelScope finished but returned no image.');
       let imageRes;
       try {
-        imageRes = await fetch(url);
+        imageRes = await modelScopeFetch(url);
       } catch (_) {
-        throw new Error('The image was generated, but the browser could not download it (the image host blocks this site).');
+        throw new Error('The image was generated, but it could not be downloaded.');
       }
       if (!imageRes.ok) throw new Error(`Could not download the generated image (HTTP ${imageRes.status}).`);
       const bytes = new Uint8Array(await imageRes.arrayBuffer());
