@@ -857,10 +857,10 @@ function saveApiKey() {
 // ---------------------------------------------------------------------------
 const PROVIDER_PRESETS = {
   logfare: { name: 'Logfare', baseUrl: 'https://logfare.ai/v1', parallel: 2 },
-  // ModelScope's image API is asynchronous (submit a task, then poll it) and is only available on the .cn site
+  // ModelScope's image API is asynchronous (submit a task, then poll it). Tokens only work on the site they were made on (.ai or .cn).
   modelscope: {
-    name: 'ModelScope', baseUrl: 'https://api-inference.modelscope.cn/v1', parallel: 2, type: 'modelscope',
-    models: ['Qwen/Qwen-Image', 'Qwen/Qwen-Image-2512', 'Tongyi-MAI/Z-Image-Turbo', 'black-forest-labs/FLUX.1-Kontext-dev']
+    name: 'ModelScope', baseUrl: 'https://api-inference.modelscope.ai/v1', parallel: 2, type: 'modelscope',
+    models: ['Qwen/Qwen-Image-2.1', 'Qwen/Qwen-Image', 'Qwen/Qwen-Image-2512', 'Tongyi-MAI/Z-Image-Turbo', 'black-forest-labs/FLUX.1-Kontext-dev']
   }
 };
 let editingProviderId = null;
@@ -1271,11 +1271,7 @@ async function generateModelScopeBlob(provider, prompt, p) {
     body: JSON.stringify({ model: p.model, prompt, size: `${p.width}x${p.height}` })
   });
   if (!submit.ok) {
-    let message = await readError(submit);
-    if (/international site/i.test(message) || /modelscope\.ai/i.test(provider.baseUrl)) {
-      message += '\nImage generation only works on the China site. Edit this provider: set the base URL to https://api-inference.modelscope.cn/v1 and use a token from modelscope.cn.';
-    }
-    throw new Error(message);
+    throw new Error(await readError(submit));
   }
   const task = await submit.json();
   const taskId = task && (task.task_id || (task.data && task.data.task_id));
