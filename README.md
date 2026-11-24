@@ -21,7 +21,7 @@ Plain HTML, CSS and JavaScript. No build step, no backend.
 2. Open **Settings** and add a key:
    - **Pollinations** – use *Connect Pollinations Account*, or paste a key from [enter.pollinations.ai](https://enter.pollinations.ai).
    - **Custom provider** – choose *Add Logfare*, *Add ModelScope* (or add your own), enter the key, then tap **Test connection**.
-   - **ModelScope** – use the site your account was made on: `https://api-inference.modelscope.ai/v1` (English site) or `https://api-inference.modelscope.cn/v1`, with a token from the same site. Add the image models you want in *Models* (for example `Qwen/Qwen-Image-2.1`), because its model list is mostly chat models.
+   - **ModelScope** – use the site your account was made on: `https://api-inference.modelscope.ai/v1` (English site) or `https://api-inference.modelscope.cn/v1`, with a token from the same site. Its model list is mostly chat models, so the app keeps only names that look like image models (Qwen-Image, Z-Image, FLUX and similar; "Edit" models are left out). If one is missing, type it into *Models*.
 3. Pick a model, write a prompt and tap Generate (Ctrl+Enter also works).
 
 ## Privacy

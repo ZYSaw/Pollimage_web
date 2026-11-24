@@ -865,6 +865,7 @@ const PROVIDER_PRESETS = {
 };
 let editingProviderId = null;
 let editingProviderType = 'openai';
+const MODELSCOPE_IMAGE_NAME = /image|flux|z-image|kolors|diffusion|sdxl|majic|wan2|t2i/i;
 
 // ModelScope providers use a task-based API. Detected by type, or by address for providers added by hand.
 function isModelScope(provider) {
@@ -895,10 +896,14 @@ async function providerFetch(url, init) {
 async function fetchProviderModels(provider) {
   const res = await providerFetch(`${provider.baseUrl}/models`, { headers: providerHeaders(provider) });
   if (!res.ok) throw new Error(await readError(res));
-  // ModelScope's list is mostly chat models and misses its image models, so it is only used to check the token
-  if (isModelScope(provider)) return [];
   const json = await res.json();
   const list = Array.isArray(json) ? json : (json.data || json.models || []);
+  // ModelScope's list is mostly chat models with nothing marking the image ones, so go by the name.
+  // "Edit" models need an input picture, which this app does not send, so they are left out.
+  if (isModelScope(provider)) {
+    const ids = list.map((m) => String(typeof m === 'string' ? m : (m && (m.id || m.name || m.model)) || '')).filter(Boolean);
+    return [...new Set(ids.filter((id) => MODELSCOPE_IMAGE_NAME.test(id) && !/edit/i.test(id)))];
+  }
   const entries = list
     .map((m) => (typeof m === 'string' ? { id: m } : m))
     .filter((m) => m && (m.id || m.name || m.model));
@@ -1056,8 +1061,8 @@ async function testProvider() {
   setProviderStatus('Testing...');
   try {
     const models = await fetchProviderModels(provider);
-    if (isModelScope(provider)) {
-      setProviderStatus('Connected. Your token works. Add the image models you want to use in "Models".', 'ok');
+    if (isModelScope(provider) && !models.length) {
+      setProviderStatus('Connected. Your token works, but no image models were recognised by name. Type the ones you want into "Models".', 'ok');
       return;
     }
     setProviderStatus(
